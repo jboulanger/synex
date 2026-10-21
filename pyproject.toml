@@ -1,0 +1,63 @@
+[project]
+name = "prrt-clustering"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [{ name = "jboulanger", email = "jerome.boulanger@laposte.net" }]
+requires-python = ">=3.13"
+dependencies = [
+    "bioio>=3.6.0",
+    "bioio-czi>=3.0.1",
+    "ipykernel>=7.4.0",
+    "matplotlib>=3.11.2",
+    "napari[pyqt6]>=0.6.5",
+    "numpy>=2.5.4",
+    "scikit-learn>=1.9.1",
+    "scipy>=1.18.1",
+    "spotiflow>=0.6.5",
+]
+
+[project.scripts]
+prrt-clustering = "prrt_clustering:main"
+
+[build-system]
+requires = ["uv_build>=0.12.21,<0.13.0"]
+build-backend = "uv_build"
+
+
+[project.optional-dependencies]
+cpu = ["torch>=2.9.1", "torchvision>=0.24.0"]
+cu126 = ["torch>=2.9.1", "torchvision>=0.24.0"]
+test = ["pytest"]
+
+
+[tool.uv]
+package = true
+conflicts = [[{ extra = "cpu" }, { extra = "cu126" }]]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+]
+
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu126" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.ruff]
+select = ["E", "F", "W", "I", "D"]
+
+[tool.ruff.pydocstyle]
+convention = "numpy"
