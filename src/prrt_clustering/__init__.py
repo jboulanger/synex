@@ -1,6 +1,11 @@
 """PRRT microscopy data analysis."""
 
-from .clustering import clean_points, cluster, create_synthetic_point_cloud
+from .clustering import (
+    clean_points,
+    cluster,
+    create_synthetic_point_cloud,
+    clean_points_outliers,
+)
 from .drift import correct_z_drift
 from .plot import plot_data, plot_points
 from .puncta import detect_puncta
@@ -13,4 +18,5 @@ __all__ = [
     "cluster",
     "clean_points",
     "create_synthetic_point_cloud",
+    "clean_points_outliers",
 ]
