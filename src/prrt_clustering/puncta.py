@@ -37,6 +37,36 @@ class Gaussian3D:
         df_dp4 = g_core
         return np.stack([df_dp0, df_dp1, df_dp2, df_dp3, df_dp4], axis=1)
 
+    def simple_fit(self, data: xr.DataArray, p: np.ndarray, niter: int = 3):
+        """Fit the model using a mean-shift.
+
+        Parameters
+        ----------
+        data: ndarray
+            2D image [H,W]
+        p: ndarray
+            Initial parameters [z,y,x,a,b]
+
+        Returns
+        -------
+        ndarray:
+            Estimated parameters [z,y,x,a,b]
+        """
+        crop = data.sel(
+            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
+            Y=slice(p[1] - self.d, p[1] + self.d),
+            X=slice(p[2] - self.d, p[2] + self.d),
+        )
+        axes = [crop[a].values for a in ["Z", "Y", "X"]]
+        xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
+        ydata = np.array(crop.data).astype(float).ravel()
+        popt = p.copy()
+        for _ in range(niter):
+            delta = (xdata - popt.reshape(3, 1)) / self.sigma
+            weights = ydata * np.exp(-0.5 * np.sum(delta**2, axis=0))
+            popt = (xdata @ weights) / np.sum(weights)
+        return popt
+
     def fit(self, data: xr.DataArray, p):
         """Fit the model.
 
@@ -64,6 +94,7 @@ class Gaussian3D:
         ydata = (ydata - a) / (b - a)
         p0 = np.array([p[0], p[1], p[2], 0, 1])
         try:
+            popt = curve_fit(self.model, xdata, ydata, p0, jac=self.jac)[0]
             popt = curve_fit(self.model, xdata, ydata, p0, jac=self.jac)[0]
 
             if np.linalg.norm(p0[:3] - popt[:3]) > 2:
@@ -110,13 +141,14 @@ def _detect_puncta_log(
     lm = np.abs(ndi.maximum_filter(score, size=3) - score) < 1e-6
     mask *= lm
     coords = origin + voxel * np.stack(np.where(mask), axis=1)
-    # intensity = [data.interp(Z=c[0],Y=c[1],X=c[2]) c in ]
+    intensity = data.values[mask]
     num_points = coords.shape[0]
     if subpixel is True:
         gauss = Gaussian3D(sigma=scale_um)
         new_coords = []
         for p in coords:
-            new_coords.append(gauss.fit(data, p))
+            # new_coords.append(gauss.fit(data, p))
+            new_coords.append(gauss.simple_fit(data, p))
         coords = np.array(new_coords)
     channel_val = data.C.item() if "C" in data.coords else 0
     if num_points == 0:
@@ -127,7 +159,7 @@ def _detect_puncta_log(
             "Y": coords[:, 1],
             "X": coords[:, 2],
             "C": channel_val,
-            "intensity": np.ones(num_points, dtype=np.float32),
+            "intensity": intensity,
         }
     )
 

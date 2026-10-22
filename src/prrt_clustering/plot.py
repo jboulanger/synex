@@ -1,6 +1,7 @@
 """Plotting and visualization utilities for microscopy images and puncta."""
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from matplotlib import pyplot as plt
 
@@ -63,11 +64,12 @@ def plot_data(data: xr.DataArray, split: bool = True, fig=None, axes=None):
         else:
             rgb = np.zeros((data.sizes["Y"], data.sizes["X"], 3))
             for k, (_, sub_data) in enumerate(groups):
-                plane = np.array(sub_data.max("Z")).astype(float)
+                plane = np.array(sub_data.max("Z")).astype(float).squeeze()
                 a, b = plane.min(), plane.max()
                 if b > a:
                     plane = (plane - a) / (b - a)
                 rgb = np.maximum(rgb, np.expand_dims(plane, 2) @ cmap[k % len(cmap)])
+
             axes[0].imshow(rgb, extent=extent)
     else:
         # Only one channel
@@ -90,12 +92,12 @@ def plot_data(data: xr.DataArray, split: bool = True, fig=None, axes=None):
     return fig, axes
 
 
-def plot_points(points, ms: float = 40, split: bool = False, axes=None):
+def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=None):
     """Display points.
 
     Parameters
     ----------
-    points : pd.DataFrame or xr.Dataset
+    points : pd.DataFrame
         Table or dataset of coordinates (X, Y, Z, C) for each point.
     ms : float, optional
         Marker size passed to plt.plot, by default 40.
@@ -112,15 +114,12 @@ def plot_points(points, ms: float = 40, split: bool = False, axes=None):
     if points is None:
         return None
 
-    # Handle xr.Dataset input by converting to a DataFrame if necessary
-    if hasattr(points, "to_dataframe"):
-        points = points.to_dataframe().reset_index()
     if split:
         cmap = np.array([[1, 0, 0]] * 4)
     else:
         cmap = np.array([[1, 0.1, 1], [1, 0.1, 0.1], [0.1, 0.9, 0.1], [0.1, 0.1, 1]])
 
-    groups = list(points.groupby("C"))
+    groups = list(points.groupby("C", sort=False))
     n_groups = len(groups)
 
     # Set up axes based on the split parameter or provided axes

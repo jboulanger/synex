@@ -32,4 +32,8 @@ uv run ruff check
 - Use `xr.DataArray` for gridded N-D image stacks.
 - Use `pandas.DataFrame` for spot/puncta detection tables and cluster assignments.
 - Coordinate order: `(Z, Y, X)` in physical units / pixel coordinates matching spatial dimensions.
-- Run tests via `pytest` before finalizing changes.
+- Run tests via `uv run pytest` before finalizing changes.
+- Run linting via `uv run ruff` before finalizing changes.
+
+## Language
+- Use 80% ASD-STE100.
