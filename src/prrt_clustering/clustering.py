@@ -328,7 +328,7 @@ def clean_points_csr(points: pd.DataFrame):
 
     pipeline = Pipeline(
         [
-            ("nn_features", NNDiffFeatureExtractor(n_neighbors=3)),
+            ("csr_features", CSRFeature(max_radius=1.5, num_radius=5)),
             ("scaler", StandardScaler()),
             ("pca", PCA(n_components=0.95, random_state=42)),
             (
