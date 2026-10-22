@@ -1,3 +1,1 @@
-"""
-Optical transfer function.
-"""
+"""Optical transfer function."""

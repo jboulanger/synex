@@ -1,8 +1,8 @@
 """Drift correction."""
 
 import numpy as np
-from scipy import ndimage as ndi
 import xarray as xr
+from scipy import ndimage as ndi
 
 
 def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarray:
@@ -20,7 +20,7 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
     Returns
     -------
     np.ndarray
-        A 1D translation vector [dy, dx].
+        A 1D translation vector [dy, dx] that registers the moving image.
     """
     if reference.shape != moving.shape:
         raise ValueError("Reference and moving images must have the same shape.")
@@ -34,16 +34,16 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
     mov = ndi.gaussian_filter(mov, 1)
 
     # Spatial gradients
-    I0, I1 = np.gradient(ref)
+    I1, I2 = np.gradient(ref)
     # Temporal gradient
-    I2 = mov - ref
+    I0 = mov - ref
 
     # Structure tensor components (mean over pixels)
-    a = np.square(I0).mean()
-    b = (I0 * I1).mean()
-    c = np.square(I1).mean()
-    d = -(I0 * I2).mean()
-    e = -(I1 * I2).mean()
+    a = np.square(I1).mean()
+    b = (I1 * I2).mean()
+    c = np.square(I2).mean()
+    d = -(I1 * I0).mean()
+    e = -(I2 * I0).mean()
 
     # Construct system matrix and vector
     A = np.array([[a, b], [b, c]])
@@ -64,7 +64,7 @@ def correct_z_drift(data: xr.DataArray) -> tuple[list[dict], xr.DataArray]:
 
     Returns
     -------
-    dict: list of shifts
+    list[dict]: list of shifts {"T": t, "C": c, "Z": z, "shift":[dy,dx]}
     np.ndarray: corrected image
     """
     shifts = []
