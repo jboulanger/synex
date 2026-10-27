@@ -3,6 +3,8 @@
 import numpy as np
 import xarray as xr
 from scipy import ndimage as ndi
+import pandas as pd
+from itertools import product
 
 
 def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarray:
@@ -20,14 +22,14 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
     Returns
     -------
     np.ndarray
-        A 1D translation vector [dy, dx] that registers the moving image.
+        A 1D translation vector [dy, dx] in pixels that registers the moving image.
     """
     if reference.shape != moving.shape:
         raise ValueError("Reference and moving images must have the same shape.")
 
     # Ensure floating-point precision
-    ref = reference.astype(np.float32, copy=False)
-    mov = moving.astype(np.float32, copy=False)
+    ref = reference.astype(np.float64, copy=False)
+    mov = moving.astype(np.float64, copy=False)
 
     # Filtering
     ref = ndi.gaussian_filter(ref, 1)
@@ -55,8 +57,8 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
     return translation
 
 
-def correct_z_drift(data: xr.DataArray) -> tuple[list[dict], xr.DataArray]:
-    """Correct the drift across the Z-axis.
+def correct_z_drift(data: xr.DataArray) -> tuple[pd.DataFrame, xr.DataArray]:
+    """Correct the drift across the Z-axis using all channels.
 
     Parameters
     ----------
@@ -69,26 +71,45 @@ def correct_z_drift(data: xr.DataArray) -> tuple[list[dict], xr.DataArray]:
     """
     shifts = []
     stabilized = xr.DataArray(np.zeros_like(data.data), data.coords)
-    matrix = np.eye(3, 3)
+
     z0 = data["Z"][0]
+    # Estimation
+    for t in data["T"]:
+        shifts.append(
+            {
+                "T": t.item(),
+                "Z": z0.item(),
+                "VX": 0,
+                "VY": 0,
+            }
+        )
+        reference = data.sel(T=t, Z=z0).mean("C").data
+        for z in data["Z"][1:]:
+            moving = data.sel(T=t, Z=z).mean("C").data
+            v = estimate_translation(reference, moving)
+            shifts.append({"T": t.item(), "Z": z.item(), "VY": v[0], "VX": v[1]})
+            reference, moving = moving, reference
+
+    # Create a DataFrame and compute the cumulative shifts
+    shifts = pd.DataFrame.from_records(shifts, index=["T", "Z"])
+    shifts["DX"] = shifts["VX"].cumsum()
+    shifts["DY"] = shifts["VY"].cumsum()
+
+    # Correction
     for t in data["T"]:
         for c in data["C"]:
-            shifts.append({"T": t, "C": c, "Z": z0, "shift": np.array([0.0, 0.0])})
             stabilized.loc[{"T": t, "C": c, "Z": z0}] = data.sel(T=t, C=c, Z=z0)
-            sv = np.array([0.0, 0.0])
-            reference = data.sel(T=t, C=c, Z=z0).data
             for z in data["Z"][1:]:
                 moving = data.sel(T=t, C=c, Z=z).data
-                v = estimate_translation(reference, moving)
-                sv += v
-                shifts.append(
-                    {"T": t, "C": c, "Z": z, "shift": v, "cumulated shifts": sv}
-                )
-                # register
-                matrix[:2, -1] = sv
+                matrix = np.eye(3, 3)
+                matrix[:2, -1] = shifts.loc[t.item(), z.item()][["DY", "DX"]]
                 registered = ndi.affine_transform(moving, matrix)
                 stabilized.loc[{"T": t, "C": c, "Z": z}] = registered
-                # swap planes
-                reference, moving = moving, reference
+
+    # Convert shift to micron
+    for dim, col in product(["X", "Y"], ["D", "V"]):
+        s = data[dim][1].item() - data[dim][0].item()
+        shifts[f"{col}{dim} [um]"] = shifts[f"{col}{dim}"] * s
+        shifts[f"{col}{dim} [um]"] = shifts[f"{col}{dim}"] * s
 
     return shifts, stabilized

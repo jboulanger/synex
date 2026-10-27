@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.cluster import OPTICS
+from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
@@ -11,9 +11,34 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-def create_synthetic_point_cloud(D=4, H=20, W=20, N=50, K=10, M=5000):
-    """Create a synthetic point clouds."""
-    # D, H, W, N, K, M = 4, 20, 20, 50, 10, 1000
+def create_synthetic_point_cloud(
+    D: int = 4,
+    H: int = 20,
+    W: int = 20,
+    N: int = 50,
+    K: int = 10,
+    M: int = 5000,
+    C: int = 4,
+):
+    """Create a synthetic point clouds.
+
+    Parameters
+    ----------
+    D: int
+        Depth
+    H: int
+        Height
+    W: int
+        Width
+    N: int
+        Number of clusters
+    K: int
+        Number of point per cluster
+    M: int
+        Number of noise points
+    C: int
+        Number of channels
+    """
     clst = np.random.uniform(low=[0, 0, 0, 0.5], high=[D, H, W, 1], size=(N, 4))
 
     points = pd.concat(
@@ -32,12 +57,17 @@ def create_synthetic_point_cloud(D=4, H=20, W=20, N=50, K=10, M=5000):
                 ),
                 columns=["Z", "Y", "X", "intensity"],
             )
-            .assign(C=channel)
+            .assign(C=f"CH-{channel}")
             .assign(noise=np.arange(N * K + M) > N * K)
-            for channel in "ABCD"
+            for channel in range(C)
         ]
     )
-    return points
+    clusters = pd.DataFrame(
+        clst,
+        columns=["Z", "Y", "X", "intensity"],
+    ).assign(C="cluster")
+
+    return points, clusters
 
 
 class OrderedGaussianMixture(GaussianMixture):
@@ -129,8 +159,8 @@ class NNDiffFeatureExtractor(BaseEstimator, TransformerMixin):
         return np.sqrt(np.diff(distances, axis=1))
 
 
-class CSRFeature(BaseEstimator, TransformerMixin):
-    """Transformer computing 3D local Besag's L-function / CSR deviation features.
+class BesagFeature(BaseEstimator, TransformerMixin):
+    """Transformer computing 3D local Besag's L-function features.
 
     Computes neighbor counts within radial balls and compares them to Complete
     Spatial Randomness (CSR) in 3D:
@@ -176,9 +206,7 @@ class CSRFeature(BaseEstimator, TransformerMixin):
         self.radii_ = np.linspace(
             self.max_radius / self.num_radius, self.max_radius, self.num_radius
         )
-        self.nn_ = NearestNeighbors(
-            radius=self.max_radius, metric=self.metric
-        )
+        self.nn_ = NearestNeighbors(radius=self.max_radius, metric=self.metric)
         self.nn_.fit(X)
 
         # Estimate global density lambda = N / V
@@ -205,7 +233,8 @@ class CSRFeature(BaseEstimator, TransformerMixin):
         # Query all neighbor distances within max_radius
         distances_list = self.nn_.radius_neighbors(X, return_distance=True)[0]
 
-        # Vectorized counting of neighbors within each radius r (excluding point itself at distance 0)
+        # Vectorized counting of neighbors within each radius r
+        # (excluding point itself at distance 0)
         counts = np.empty((len(X), len(self.radii_)), dtype=np.float64)
         for i, dists in enumerate(distances_list):
             if len(dists) <= 1:
@@ -213,7 +242,9 @@ class CSRFeature(BaseEstimator, TransformerMixin):
             else:
                 # Exclude self-distance (distance ~ 0)
                 dists_no_self = dists[dists > 1e-12]
-                counts[i, :] = np.searchsorted(np.sort(dists_no_self), self.radii_, side="right")
+                counts[i, :] = np.searchsorted(
+                    np.sort(dists_no_self), self.radii_, side="right"
+                )
 
         # 3D Besag L-function: (3 * N_i(r) / (4 * pi * lambda))^(1/3) - r
         # Under CSR, expected value is 0. Clustered points produce L(r) > 0.
@@ -221,7 +252,7 @@ class CSRFeature(BaseEstimator, TransformerMixin):
         return l_r
 
 
-def clean_points(points: pd.DataFrame):
+def clean_points_nn_gmm(points: pd.DataFrame, n_neighbors=10):
     """Clean point cloud using nearest neighbors.
 
     Parameters
@@ -235,11 +266,11 @@ def clean_points(points: pd.DataFrame):
         Copy of points with an added boolean 'noise' column.
     """
     clean = []
-    # import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
 
     pipeline = Pipeline(
         [
-            ("nn_features", NNDiffFeatureExtractor(n_neighbors=3)),
+            ("nn_features", NNDiffFeatureExtractor(n_neighbors)),
             ("scaler", StandardScaler()),
             ("pca", PCA(n_components=0.95, random_state=42)),
             (
@@ -258,15 +289,15 @@ def clean_points(points: pd.DataFrame):
         p["noise"] = labels == 0
         clean.append(p)
         # Visualization
-        # Z = gmm_pipeline.named_steps["nn_features"].transform(X)
-        # label_keep = 0
-        # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
-        # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-        # plt.show()
+        Z = pipeline.named_steps["nn_features"].transform(X)
+        label_keep = 0
+        plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
+        plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
+        plt.show()
     return pd.concat(clean)
 
 
-def clean_points_outliers(points: pd.DataFrame):
+def clean_points_nn_if(points: pd.DataFrame, contamination=0.1):
     """Clean point cloud using nearest neighbors and IsolationForest.
 
     Parameters
@@ -290,17 +321,17 @@ def clean_points_outliers(points: pd.DataFrame):
             ("pca", PCA(n_components=0.95, random_state=42)),
             (
                 "isolation_forest",
-                IsolationForest(contamination=0.05),
+                IsolationForest(contamination=contamination),
             ),
         ]
     )
+    # pipeline = IsolationForest(contamination=0.001)
 
-    label_keep = -1
     for _, p in points.groupby("C"):
         p = p.copy()
         X = p[["Z", "Y", "X"]].to_numpy()
         labels = pipeline.fit_predict(X)
-        p["noise"] = labels != label_keep
+        p["noise"] = labels == 1
         clean.append(p)
         # Visualization
         # Z = pipeline.named_steps["nn_features"].transform(X)
@@ -310,8 +341,10 @@ def clean_points_outliers(points: pd.DataFrame):
     return pd.concat(clean)
 
 
-def clean_points_csr(points: pd.DataFrame):
-    """Clean point cloud using csr.
+def clean_points_besag_gmm(
+    points: pd.DataFrame, max_radius: float = 1.5, num_radius: int = 11
+):
+    """Clean point cloud using besag features.
 
     Parameters
     ----------
@@ -324,11 +357,11 @@ def clean_points_csr(points: pd.DataFrame):
         Copy of points with an added boolean 'noise' column.
     """
     clean = []
-    # import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt
 
     pipeline = Pipeline(
         [
-            ("csr_features", CSRFeature(max_radius=1.5, num_radius=5)),
+            ("csr_features", BesagFeature(max_radius, num_radius)),
             ("scaler", StandardScaler()),
             ("pca", PCA(n_components=0.95, random_state=42)),
             (
@@ -341,22 +374,24 @@ def clean_points_csr(points: pd.DataFrame):
     )
 
     for _, p in points.groupby("C"):
-        p = p.copy()
         X = p[["Z", "Y", "X"]].to_numpy()
         labels = pipeline.fit_predict(X)
         p["noise"] = labels == 0
         clean.append(p)
         # Visualization
-        # Z = gmm_pipeline.named_steps["nn_features"].transform(X)
-        # label_keep = 0
+
+        # Z = pipeline.named_steps["csr_features"].transform(X)
+        # plt.imshow(
+        #     Z, aspect="auto", interpolation="none", extent=(0, 0.5, Z.shape[0], 0)
+        # )
         # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
         # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-        # plt.show()
+    plt.show()
     return pd.concat(clean)
 
 
 def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
-    """Cluster points for each channel C using OPTICS.
+    """Cluster points for each channel C using DBSCAN.
 
     Parameters
     ----------
@@ -366,17 +401,21 @@ def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
     if points is None or points.empty:
         return None
 
-    model = OPTICS(max_eps=eps, min_samples=min_samples)
-    clusters = []
+    model = DBSCAN(eps=eps, min_samples=min_samples)
+    new_points = []
 
     for _, p in points.groupby("C"):
         X = p[["Z", "Y", "X"]].to_numpy()
         labels = model.fit_predict(X)
         p["cluster"] = labels
         p["noise"] = labels == -1
-        clusters.append(p)
+        new_points.append(p)
 
-    if not clusters:
-        return None
+    if not new_points:
+        return None, None
 
-    return pd.concat(clusters, ignore_index=True)
+    new_points = pd.concat(new_points, ignore_index=True)
+
+    clusters = new_points.groupby(["C", "cluster"]).mean()
+
+    return new_points, clusters

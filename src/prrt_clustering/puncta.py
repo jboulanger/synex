@@ -4,9 +4,11 @@ from itertools import product
 
 import numpy as np
 import pandas as pd
+import skimage as ski
 import xarray as xr
 from scipy import ndimage as ndi
 from scipy.optimize import curve_fit
+import dask.array as da
 
 
 class Gaussian3D:
@@ -37,8 +39,21 @@ class Gaussian3D:
         df_dp4 = g_core
         return np.stack([df_dp0, df_dp1, df_dp2, df_dp3, df_dp4], axis=1)
 
+    def _prepare_data(self, data: xr.DataArray, p: np.ndarray):
+        crop = data.sel(
+            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
+            Y=slice(p[1] - self.d, p[1] + self.d),
+            X=slice(p[2] - self.d, p[2] + self.d),
+        ).compute()
+        axes = [crop[a].values for a in ["Z", "Y", "X"]]
+        xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
+        ydata = np.array(crop.data).astype(float).ravel()
+        ymin, ymax = ydata.min(), ydata.max()
+        ydata = (ydata - ymin) / (ymax - ymin)
+        return xdata, ydata, ymin, ymax
+
     def simple_fit(self, data: xr.DataArray, p: np.ndarray, niter: int = 3):
-        """Fit the model using a mean-shift.
+        """Fit the model location parameters using a mean-shift.
 
         Parameters
         ----------
@@ -52,17 +67,10 @@ class Gaussian3D:
         ndarray:
             Estimated parameters [z,y,x,a,b]
         """
-        crop = data.sel(
-            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
-            Y=slice(p[1] - self.d, p[1] + self.d),
-            X=slice(p[2] - self.d, p[2] + self.d),
-        )
-        axes = [crop[a].values for a in ["Z", "Y", "X"]]
-        xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
-        ydata = np.array(crop.data).astype(float).ravel()
+        xdata, ydata, _, _ = self._prepare_data(data, p)
         popt = p.copy()
         for _ in range(niter):
-            delta = (xdata - popt.reshape(3, 1)) / self.sigma
+            delta = (xdata - popt[:3].reshape(3, 1)) / self.sigma
             weights = ydata * np.exp(-0.5 * np.sum(delta**2, axis=0))
             popt = (xdata @ weights) / np.sum(weights)
         return popt
@@ -82,28 +90,17 @@ class Gaussian3D:
         ndarray:
             Estimated parameters [z,y,x,a,b]
         """
-        crop = data.sel(
-            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
-            Y=slice(p[1] - self.d, p[1] + self.d),
-            X=slice(p[2] - self.d, p[2] + self.d),
-        )
-        axes = [crop[a].values for a in ["Z", "Y", "X"]]
-        xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
-        ydata = np.array(crop.data).astype(float).ravel()
-        a, b = np.percentile(ydata, [0, 100])
-        ydata = (ydata - a) / (b - a)
+        xdata, ydata, ymin, ymax = self._prepare_data(data, p)
         p0 = np.array([p[0], p[1], p[2], 0, 1])
         try:
             popt = curve_fit(self.model, xdata, ydata, p0, jac=self.jac)[0]
-            popt = curve_fit(self.model, xdata, ydata, p0, jac=self.jac)[0]
-
             if np.linalg.norm(p0[:3] - popt[:3]) > 2:
                 popt = p0
 
         except Exception:
             popt = p0
-        popt[3] = popt[3] * (b - a) + a
-        popt[4] = popt[4] * (b - a)
+        popt[3] = popt[3] * (ymax - ymin) + ymin
+        popt[4] = popt[4] * (ymax - ymin)
 
         return popt
 
@@ -128,38 +125,73 @@ def _detect_puncta_log(
     pd.DataFrame
         DataFrame with coordinates (Z, Y, X), channel (C), and intensity.
     """
+    # Compute scale in pixels
     voxel = np.array([(data[a][1].values - data[a][0].values) for a in ["Z", "Y", "X"]])
     origin = np.array([data[a][0].values for a in ["Z", "Y", "X"]])
     sigma = scale_um / voxel
     sigma[0] *= 3
-    score = np.sqrt(data.data.astype(np.float32))
+    # Compute a score using the laplacian of Gaussian filter
+    if isinstance(data, da.Array):
+        score = data.data.compute().astype(np.float32, copy=False)
+    else:
+        score = data.data.astype(np.float32, copy=False)
+    score = np.sqrt(score)
     score = ndi.gaussian_filter(score, sigma)
     score = -ndi.laplace(score)
-    beta = np.median(np.abs(score))
-    t = 2.302 * specificity * beta  # log(10)
+
+    # Threshold the score assuming the score follows a laplace distribution
+    m = np.median(score)
+    beta = np.median(np.abs(score - m))
+    t = m + 2.302 * specificity * beta  # log(10)
     mask = score > t
-    lm = np.abs(ndi.maximum_filter(score, size=3) - score) < 1e-6
-    mask *= lm
-    coords = origin + voxel * np.stack(np.where(mask), axis=1)
-    intensity = data.values[mask]
-    num_points = coords.shape[0]
+
+    # Compute the distance function
+    distance = ndi.distance_transform_edt(mask)
+    distance = ndi.gaussian_filter(distance, 1)
+
+    # Define markers as local maxima
+    markers = ski.morphology.label(
+        (
+            (
+                np.abs(
+                    ndi.maximum_filter(distance, footprint=np.ones((3, 3, 3)))
+                    - distance
+                )
+                < 1e-6
+            )
+            * mask
+        ),
+        background=0,
+    )
+
+    # Split regions using a watershed
+    labels = ski.segmentation.watershed(-distance, markers, mask=mask)
+
+    # Extract centroid, area and mean intensity
+    props = ski.measure.regionprops(labels, data.data.compute())
+    if len(props) == 0:
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area"])
+    coords = np.array([[*p.centroid_weighted, p.area, p.intensity_mean] for p in props])
+
+    # Scale spatial coordinates
+    coords[:, :3] = origin + voxel * coords[:, :3]
+
+    # Subpixel localization
     if subpixel is True:
         gauss = Gaussian3D(sigma=scale_um)
         new_coords = []
         for p in coords:
-            # new_coords.append(gauss.fit(data, p))
-            new_coords.append(gauss.simple_fit(data, p))
+            popt = gauss.fit(data, p)
+            new_coords.append([popt[0], popt[1], popt[2], p[3], p[4]])
         coords = np.array(new_coords)
-    channel_val = data.C.item() if "C" in data.coords else 0
-    if num_points == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity"])
     return pd.DataFrame(
         {
             "Z": coords[:, 0],
             "Y": coords[:, 1],
             "X": coords[:, 2],
-            "C": channel_val,
-            "intensity": intensity,
+            "C": data.C.item() if "C" in data.coords else 0,
+            "intensity": coords[:, 3] * coords[:, 4],
+            "area": coords[:, 3],
         }
     )
 
@@ -176,8 +208,8 @@ def detect_puncta(
     ----------
     data: xr.DataArray
         Input array
-    scale_um: float
-    specificity: float
+    scale_um: list[float] | float
+    specificity: list[float] | float
 
     Returns
     -------

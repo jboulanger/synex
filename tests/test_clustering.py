@@ -4,8 +4,8 @@ import numpy as np
 from sklearn.metrics import confusion_matrix, f1_score
 
 from prrt_clustering.clustering import (
-    clean_points,
-    clean_points_outliers,
+    clean_points_nn_gmm,
+    clean_points_nn_if,
     create_synthetic_point_cloud,
 )
 
@@ -17,7 +17,7 @@ def test_clean_points():
     points = create_synthetic_point_cloud()
 
     # test compute_nearest_neighbor
-    clean = clean_points(points)
+    clean = clean_points_nn_gmm(points)
 
     assert len(clean) == len(points)
     assert "noise" in clean.columns
@@ -40,7 +40,7 @@ def test_clean_points_outliers():
     np.random.seed(42)
     points = create_synthetic_point_cloud()
 
-    clean = clean_points_outliers(points)
+    clean = clean_points_nn_if(points)
 
     assert len(clean) == len(points)
     assert "noise" in clean.columns
