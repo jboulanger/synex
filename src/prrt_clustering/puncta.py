@@ -8,7 +8,6 @@ import skimage as ski
 import xarray as xr
 from scipy import ndimage as ndi
 from scipy.optimize import curve_fit
-import dask.array as da
 
 
 class Gaussian3D:
@@ -40,11 +39,14 @@ class Gaussian3D:
         return np.stack([df_dp0, df_dp1, df_dp2, df_dp3, df_dp4], axis=1)
 
     def _prepare_data(self, data: xr.DataArray, p: np.ndarray):
-        crop = data.sel(
-            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
-            Y=slice(p[1] - self.d, p[1] + self.d),
-            X=slice(p[2] - self.d, p[2] + self.d),
-        ).compute()
+        crop = np.asarray(
+            data.sel(
+                Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
+                Y=slice(p[1] - self.d, p[1] + self.d),
+                X=slice(p[2] - self.d, p[2] + self.d),
+            )
+        )
+
         axes = [crop[a].values for a in ["Z", "Y", "X"]]
         xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
         ydata = np.array(crop.data).astype(float).ravel()
@@ -131,10 +133,7 @@ def _detect_puncta_log(
     sigma = scale_um / voxel
     sigma[0] *= 3
     # Compute a score using the laplacian of Gaussian filter
-    if isinstance(data, da.Array):
-        score = data.data.compute().astype(np.float32, copy=False)
-    else:
-        score = data.data.astype(np.float32, copy=False)
+    score = np.asarray(data.data, dtype=np.float32, copy=False)
     score = np.sqrt(score)
     score = ndi.gaussian_filter(score, sigma)
     score = -ndi.laplace(score)
@@ -184,6 +183,8 @@ def _detect_puncta_log(
             popt = gauss.fit(data, p)
             new_coords.append([popt[0], popt[1], popt[2], p[3], p[4]])
         coords = np.array(new_coords)
+
+    # Format the resutls as a dataframe
     return pd.DataFrame(
         {
             "Z": coords[:, 0],
