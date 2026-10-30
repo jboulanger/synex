@@ -39,17 +39,15 @@ class Gaussian3D:
         return np.stack([df_dp0, df_dp1, df_dp2, df_dp3, df_dp4], axis=1)
 
     def _prepare_data(self, data: xr.DataArray, p: np.ndarray):
-        crop = np.asarray(
-            data.sel(
-                Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
-                Y=slice(p[1] - self.d, p[1] + self.d),
-                X=slice(p[2] - self.d, p[2] + self.d),
-            )
+        crop = data.sel(
+            Z=slice(p[0] - 3 * self.d, p[0] + 3 * self.d),
+            Y=slice(p[1] - self.d, p[1] + self.d),
+            X=slice(p[2] - self.d, p[2] + self.d),
         )
 
         axes = [crop[a].values for a in ["Z", "Y", "X"]]
         xdata = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3).T
-        ydata = np.array(crop.data).astype(float).ravel()
+        ydata = np.asarray(crop.data, dtype=float, copy=False).ravel()
         ymin, ymax = ydata.min(), ydata.max()
         ydata = (ydata - ymin) / (ymax - ymin)
         return xdata, ydata, ymin, ymax
@@ -111,7 +109,7 @@ def _detect_puncta_log(
     data: xr.DataArray,
     scale_um: float = 0.1,
     specificity: float = 3,
-    subpixel: bool = True,
+    subpixel: bool = False,
 ) -> pd.DataFrame:
     """Detect puncta with Laplacian of Gaussians.
 
@@ -121,6 +119,8 @@ def _detect_puncta_log(
         Input array
     scale_um: float
     specificity: float
+    subpixel:bool
+        activate subpixel localization
 
     Returns
     -------
@@ -133,8 +133,8 @@ def _detect_puncta_log(
     sigma = scale_um / voxel
     sigma[0] *= 3
     # Compute a score using the laplacian of Gaussian filter
-    score = np.asarray(data.data, dtype=np.float32, copy=False)
-    score = np.sqrt(score)
+    score = np.asarray(data.data, dtype=np.float32)
+    score = np.sqrt(np.maximum(0, score))
     score = ndi.gaussian_filter(score, sigma)
     score = -ndi.laplace(score)
 
@@ -145,32 +145,33 @@ def _detect_puncta_log(
     mask = score > t
 
     # Compute the distance function
-    distance = ndi.distance_transform_edt(mask)
+    distance = ndi.distance_transform_edt(mask, sampling=voxel)
     distance = ndi.gaussian_filter(distance, 1)
 
-    # Define markers as local maxima
-    markers = ski.morphology.label(
-        (
-            (
-                np.abs(
-                    ndi.maximum_filter(distance, footprint=np.ones((3, 3, 3)))
-                    - distance
-                )
-                < 1e-6
-            )
-            * mask
-        ),
-        background=0,
+    # Define markers as local maxima of the score within the mask
+    peak_coords = ski.feature.peak_local_max(
+        score,
+        labels=mask,
+        exclude_border=False,
     )
+    peak_mask = np.zeros_like(mask, dtype=bool)
+    if len(peak_coords) > 0:
+        peak_mask[tuple(peak_coords.T)] = True
+    markers = ski.morphology.label(peak_mask, connectivity=3)
 
     # Split regions using a watershed
     labels = ski.segmentation.watershed(-distance, markers, mask=mask)
 
     # Extract centroid, area and mean intensity
-    props = ski.measure.regionprops(labels, data.data.compute())
+    props = ski.measure.regionprops(labels, np.asarray(data.data))
+
     if len(props) == 0:
         return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area"])
-    coords = np.array([[*p.centroid_weighted, p.area, p.intensity_mean] for p in props])
+    coords = np.array(
+        [[*p.centroid_weighted, p.area, p.intensity_mean] for p in props if p.area > 9]
+    )
+    if len(coords) == 0:
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area"])
 
     # Scale spatial coordinates
     coords[:, :3] = origin + voxel * coords[:, :3]
@@ -199,8 +200,8 @@ def _detect_puncta_log(
 
 def detect_puncta(
     data: xr.DataArray,
-    scale_um: float = 0.1,
-    specificity: float = 3,
+    scale_um: list[float] = [0.1, 0.1, 0.1, 0.1],
+    specificity: list[float] = [3, 3, 3, 3],
     subpixel: bool = False,
 ) -> pd.DataFrame:
     """Detect puncta in a multi-channel dataset.
@@ -223,16 +224,19 @@ def detect_puncta(
         return _detect_puncta_log(
             data, scale_um=scale_um, specificity=specificity, subpixel=subpixel
         )
-    for coords in product(*dims):
+    for index, coords in enumerate(product(*dims)):
         cdict = {c.name: c.data.item() for c in coords}
         points.append(
             _detect_puncta_log(
                 data.sel(cdict),
-                scale_um=scale_um,
-                specificity=specificity,
+                scale_um=scale_um[index],
+                specificity=specificity[index],
                 subpixel=subpixel,
             )
         )
+        points[-1]["index"] = index
+        points[-1]["index"] = points[-1]["index"].astype(int)
+
     if len(points) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area", "index"])
     return pd.concat(points, ignore_index=True)

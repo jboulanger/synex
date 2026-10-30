@@ -47,8 +47,8 @@ def test_correct_z_drift():
 
     # Check correctness
     assert len(shifts) == shape[2]
-    errors = [d["shift"] - true_shift for d in shifts[1:]]
-    assert np.mean(np.abs(errors)) < 0.1
+    errors = np.array([[d["VY"], d["VX"]] for d in shifts.iloc]) - true_shift
+    assert np.mean(np.abs(errors[1:])) < 0.1
     assert corrected.data.shape == shape
 
 

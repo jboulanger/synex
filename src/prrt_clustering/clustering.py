@@ -8,7 +8,7 @@ from sklearn.decomposition import PCA
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 
 def create_synthetic_point_cloud(
@@ -38,6 +38,11 @@ def create_synthetic_point_cloud(
         Number of noise points
     C: int
         Number of channels
+
+    Returns
+    -------
+    pd.DataFrame: points
+    pd.DataFrame: clusters
     """
     clst = np.random.uniform(low=[0, 0, 0, 0.5], high=[D, H, W, 1], size=(N, 4))
 
@@ -160,7 +165,9 @@ class NNDiffFeatureExtractor(BaseEstimator, TransformerMixin):
 
 
 class BesagFeature(BaseEstimator, TransformerMixin):
-    """Transformer computing 3D local Besag's L-function features.
+    """Transformer computing 3D local Besag's L-function weighted features.
+
+    Uses the 4th column as weight.
 
     Computes neighbor counts within radial balls and compares them to Complete
     Spatial Randomness (CSR) in 3D:
@@ -193,7 +200,7 @@ class BesagFeature(BaseEstimator, TransformerMixin):
         Parameters
         ----------
         X : array-like of shape (n_samples, n_features)
-            Training coordinate points (e.g. Z, Y, X).
+            Training coordinate points (Z, Y, X, W) with W a weight.
         y : Ignored
             Not used, present for API consistency.
 
@@ -202,18 +209,20 @@ class BesagFeature(BaseEstimator, TransformerMixin):
         self : CSRFeature
             Fitted transformer instance.
         """
-        X = np.asarray(X)
+        # Compute spatial nearest neighbors.
+        Xs = np.asarray(X)[:, :3]
+        W = np.asarray(X)[:, -1]
         self.radii_ = np.linspace(
             self.max_radius / self.num_radius, self.max_radius, self.num_radius
         )
         self.nn_ = NearestNeighbors(radius=self.max_radius, metric=self.metric)
-        self.nn_.fit(X)
+        self.nn_.fit(Xs)
 
         # Estimate global density lambda = N / V
         # Use bounding box volume with guard against 0 volume
-        ranges = np.ptp(X, axis=0)
+        ranges = np.ptp(Xs, axis=0)
         volume = float(np.prod(np.maximum(ranges, 1e-6)))
-        self.lambda_ = max(len(X) / volume, 1e-12)
+        self.lambda_ = max(W.sum() / volume, 1e-12)
         return self
 
     def transform(self, X):
@@ -229,22 +238,28 @@ class BesagFeature(BaseEstimator, TransformerMixin):
         ndarray of shape (n_samples, num_radius)
             Besag L-function values L_i(r) across radii.
         """
-        X = np.asarray(X)
+        Xs = np.asarray(X)[:, :3]
+        W = np.asarray(X)[:, -1]
+
         # Query all neighbor distances within max_radius
-        distances_list = self.nn_.radius_neighbors(X, return_distance=True)[0]
+        nn_dist, nn_ind = self.nn_.radius_neighbors(
+            Xs, return_distance=True, sort_results=True
+        )
 
         # Vectorized counting of neighbors within each radius r
         # (excluding point itself at distance 0)
         counts = np.empty((len(X), len(self.radii_)), dtype=np.float64)
-        for i, dists in enumerate(distances_list):
+        bins = np.concatenate([[0], self.radii_])
+        for i, (dists, inds) in enumerate(zip(nn_dist, nn_ind)):
             if len(dists) <= 1:
                 counts[i, :] = 0.0
             else:
-                # Exclude self-distance (distance ~ 0)
-                dists_no_self = dists[dists > 1e-12]
-                counts[i, :] = np.searchsorted(
-                    np.sort(dists_no_self), self.radii_, side="right"
-                )
+                # Exclude self-distance (distance ~ 0) and self-weight
+                dists_no_self = dists[1:]
+                weights_no_self = W[inds[1:]]
+                # Accumulate weighs into counts
+                h = np.histogram(dists, bins, weights=W[inds])[0]
+                counts[i, :] = np.cumsum(h)
 
         # 3D Besag L-function: (3 * N_i(r) / (4 * pi * lambda))^(1/3) - r
         # Under CSR, expected value is 0. Clustered points produce L(r) > 0.
@@ -266,7 +281,7 @@ def clean_points_nn_gmm(points: pd.DataFrame, n_neighbors=10):
         Copy of points with an added boolean 'noise' column.
     """
     clean = []
-    import matplotlib.pyplot as plt
+    # import matplotlib.pyplot as plt
 
     pipeline = Pipeline(
         [
@@ -289,11 +304,11 @@ def clean_points_nn_gmm(points: pd.DataFrame, n_neighbors=10):
         p["noise"] = labels == 0
         clean.append(p)
         # Visualization
-        Z = pipeline.named_steps["nn_features"].transform(X)
-        label_keep = 0
-        plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
-        plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-        plt.show()
+        # Z = pipeline.named_steps["nn_features"].transform(X)
+        # label_keep = 0
+        # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
+        # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
+        # plt.show()
     return pd.concat(clean)
 
 
@@ -362,8 +377,8 @@ def clean_points_besag_gmm(
     pipeline = Pipeline(
         [
             ("csr_features", BesagFeature(max_radius, num_radius)),
-            ("scaler", StandardScaler()),
-            ("pca", PCA(n_components=0.95, random_state=42)),
+            ("scaler", RobustScaler()),
+            # ("pca", PCA(n_components=2, random_state=42)),
             (
                 "gmm",
                 OrderedGaussianMixture(
@@ -374,19 +389,55 @@ def clean_points_besag_gmm(
     )
 
     for _, p in points.groupby("C"):
-        X = p[["Z", "Y", "X"]].to_numpy()
+        X = p[["Z", "Y", "X", "intensity"]].to_numpy()
         labels = pipeline.fit_predict(X)
         p["noise"] = labels == 0
         clean.append(p)
         # Visualization
-
         # Z = pipeline.named_steps["csr_features"].transform(X)
+        # Z = pipeline.named_steps["scaler"].transform(Z)
+        # Z = pipeline.named_steps["pca"].transform(Z)
+        # label_keep = 1
         # plt.imshow(
         #     Z, aspect="auto", interpolation="none", extent=(0, 0.5, Z.shape[0], 0)
         # )
         # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
         # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-    plt.show()
+        # plt.show()
+    return pd.concat(clean)
+
+
+def clean_points_besag(
+    points: pd.DataFrame,
+    max_radius: float = 1.5,
+    num_radius: int = 11,
+    threshold: float = 1,
+):
+    """Clean point cloud using by looking how much.
+
+    Parameters
+    ----------
+    points: pd.DataFrame
+        DataFrame with columns X, Y, Z, C, intensity
+
+    Returns
+    -------
+    pd.DataFrame
+        Copy of points with an added boolean 'noise' column.
+    """
+    clean = []
+
+    pipeline = BesagFeature(max_radius, num_radius)
+
+    for _, p in points.groupby("C", sort=False):
+        X = p[["Z", "Y", "X", "intensity"]].to_numpy()
+        labels = pipeline.fit_transform(X)
+        # import matplotlib.pyplot as plt
+
+        # plt.imshow(labels < threshold)
+        # plt.show()
+        p["noise"] = (labels < threshold).min(axis=1)
+        clean.append(p)
     return pd.concat(clean)
 
 
@@ -417,5 +468,38 @@ def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
     new_points = pd.concat(new_points, ignore_index=True)
 
     clusters = new_points.groupby(["C", "cluster"]).mean()
+    clusters = clusters[clusters["noise"] < 0.5]
+    clusters = clusters.reset_index()
+    clusters.drop(columns=["noise"], inplace=True)
 
     return new_points, clusters
+
+
+def pair_cluster(points: pd.DataFrame, C1: str, C2: str, distance: float):
+    """Pair clusters that are less than the distance away.
+
+    Parameters
+    ----------
+    points: pd.Dataframe
+        Dataframe with X,Y,Z,C containing cluster centers
+    C1:  str
+        name of the first channel
+    C2: str
+        name of the second channel
+    distance: float
+        Distance threshold
+
+    Returns
+    -------
+    pd.DataFrame
+        List of pairs
+    """
+    X1 = points[points["C"] == C1][["Z", "Y", "X"]].to_numpy()
+    X2 = points[points["C"] == C2][["Z", "Y", "X"]].to_numpy()
+
+    from scipy.spatial.distance import cdist
+
+    D = cdist(X1, X2) < distance
+
+    pairs = np.where(D)
+    return pd.DataFrame({"C1": pairs[0], "C2": pairs[1]})

@@ -1,11 +1,12 @@
 """PRRT microscopy data analysis."""
 
 from .clustering import (
+    clean_points_besag_gmm,
     clean_points_nn_gmm,
     clean_points_nn_if,
-    clean_points_besag_gmm,
     cluster,
     create_synthetic_point_cloud,
+    clean_points_besag,
 )
 from .drift import correct_z_drift
 from .plot import plot_data, plot_points
@@ -21,4 +22,5 @@ __all__ = [
     "create_synthetic_point_cloud",
     "clean_points_nn_if",
     "clean_points_besag_gmm",
+    "clean_points_besag",
 ]

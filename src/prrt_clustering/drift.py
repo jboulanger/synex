@@ -1,10 +1,11 @@
 """Drift correction."""
 
+from itertools import product
+
 import numpy as np
+import pandas as pd
 import xarray as xr
 from scipy import ndimage as ndi
-import pandas as pd
-from itertools import product
 
 
 def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarray:

@@ -119,7 +119,7 @@ def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=
     else:
         cmap = np.array([[1, 0.1, 1], [1, 0.1, 0.1], [0.1, 0.9, 0.1], [0.1, 0.1, 1]])
 
-    groups = list(points.groupby("C", sort=False))
+    groups = list(points.groupby("index", sort=False))
     n_groups = len(groups)
 
     # Set up axes based on the split parameter or provided axes
@@ -133,14 +133,16 @@ def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=
     else:
         if not isinstance(axes, (list, np.ndarray, tuple)):
             axes = [axes] * n_groups if not split else [axes]
-        if len(axes) != n_groups:
+        if len(axes) < n_groups:
             raise ValueError(
-                "Number of provided axes does not match number of channel groups."
+                f"Number of provided axes {len(axes)} does not match number "
+                f"of channel groups ({n_groups})."
             )
         fig = axes[0].figure
 
     # Unified plotting loop
-    for k, (_, pts) in enumerate(groups):
+    for k, pts in groups:
+        k = int(k)
         axes[k].plot(
             pts["X"],
             pts["Y"],
