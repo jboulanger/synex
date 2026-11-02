@@ -21,8 +21,18 @@ uv run ruff check
    - Output: `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C', 'intensity']`.
 3. **Clustering** (`clustering.py`):
    - Input: Spot coordinates table (`pandas.DataFrame`).
-   - Method: Per-channel spatial clustering (DBSCAN) to discard background noise.
-   - Output: `pandas.DataFrame` with assigned `'class'` labels.
+   - Method: Per-channel spatial clustering (DBSCAN) to discard background noise in the channels `"RIM"` and `"PSD"`
+   - Output: `pandas.DataFrame` with assigned `'cluster'` labels
+4. **Synapse detection** (`clustering.py`):
+   - Input: `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C', 'intensity']`.
+   - Method: Clustering and proximity of cluster < 1um in the channels `"RIM"` and `"PSD"`
+   - Output: `pandas.DataFrame` with columns `['pre', 'post']`.
+4. **Proportion of synapse type**
+   - Input: `pandas.DataFrame` with columns `['pre', 'post']`, `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C', 'intensity']`
+   - Method: For each synapse check the proximity of puncta in other channels
+   - Output: `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C', 'intensity']` and a row per synapse
+5. **Distance**
+   - Method: measure the distance between markers inside a synapse
 4. **Visualization** (`plot.py`):
    - 2D max projections (`plot_data`) and overlayed multi-channel spot scatter (`plot_points`).
 
@@ -35,3 +45,8 @@ uv run ruff check
 
 ## Language
 - Use 80% ASD-STE100.
+
+## Guardrails
+- **Always do:** Add unit tests in `tests/` matching new function logic.
+- **Ask first:** Before adding new 3rd-party dependencies via `uv add`.
+- **Never do:** Inspect files outside the working folder.

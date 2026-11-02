@@ -2,6 +2,9 @@
 
 import numpy as np
 import pandas as pd
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
+from scipy.spatial import KDTree
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
@@ -219,7 +222,6 @@ class BesagFeature(BaseEstimator, TransformerMixin):
         self.nn_.fit(Xs)
 
         # Estimate global density lambda = N / V
-        # Use bounding box volume with guard against 0 volume
         ranges = np.ptp(Xs, axis=0)
         volume = float(np.prod(np.maximum(ranges, 1e-6)))
         self.lambda_ = max(W.sum() / volume, 1e-12)
@@ -372,7 +374,6 @@ def clean_points_besag_gmm(
         Copy of points with an added boolean 'noise' column.
     """
     clean = []
-    import matplotlib.pyplot as plt
 
     pipeline = Pipeline(
         [
@@ -441,7 +442,7 @@ def clean_points_besag(
     return pd.concat(clean)
 
 
-def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
+def cluster_dbscan(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
     """Cluster points for each channel C using DBSCAN.
 
     Parameters
@@ -450,7 +451,7 @@ def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
         DataFrame with columns: X, Y, Z, C and intensity
     """
     if points is None or points.empty:
-        return None
+        return None, None
 
     model = DBSCAN(eps=eps, min_samples=min_samples)
     new_points = []
@@ -475,7 +476,97 @@ def cluster(points: pd.DataFrame, eps: float = 2.0, min_samples: int = 5):
     return new_points, clusters
 
 
-def pair_cluster(points: pd.DataFrame, C1: str, C2: str, distance: float):
+def find_clusters(
+    df, max_distance, threshold, x_col="X", y_col="Y", z_col="Z", v_col="V"
+):
+    """Find distance-connected clusters in a point cloud DataFrame where the sum of V exceeds threshold.
+
+    Parameters
+    ----------
+    - df: pd.DataFrame containing the point cloud data
+    - max_distance: float, maximum distance d for neighborhood connection (eps)
+    - threshold: float, minimum sum of V required (t)
+    - x_col, y_col, z_col, v_col: str, column names for coordinates and value
+
+    Returns
+    -------
+    - valid_clusters: list of dicts containing cluster metadata
+    - df_annotated: pd.DataFrame with an added 'cluster_id' column (-1 for noise/filtered out)
+    """
+    # 1. Extract coordinates and values as NumPy arrays for speed
+    points_xyz = df[[x_col, y_col, z_col]].to_numpy()
+    values = df[v_col].to_numpy()
+    n_points = len(df)
+
+    if n_points == 0:
+        print("DataFrame is empty.")
+        return [], df.copy()
+
+    print("Building KD-Tree...")
+    tree = KDTree(points_xyz)
+
+    print("Finding neighboring point pairs...")
+    pairs = tree.query_pairs(r=max_distance, output_type="set")
+
+    if not pairs:
+        print("No pairs found within max_distance.")
+        df_out = df.copy()
+        df_out["cluster_id"] = -1
+        return [], df_out
+
+    # Build adjacency structure for connected components
+    row = np.array([p[0] for p in pairs])
+    col = np.array([p[1] for p in pairs])
+    data = np.ones(len(pairs))
+
+    # Make symmetric
+    row_sym = np.concatenate([row, col])
+    col_sym = np.concatenate([col, row])
+    data_sym = np.concatenate([data, data])
+
+    graph = coo_matrix((data_sym, (row_sym, col_sym)), shape=(n_points, n_points))
+
+    print("Computing connected components...")
+    n_components, labels = connected_components(
+        csgraph=graph, directed=False, return_labels=True
+    )
+
+    # Evaluate clusters against threshold
+    valid_clusters = []
+    final_labels = np.full(n_points, -1, dtype=int)  # -1 represents filtered-out points
+    valid_cluster_counter = 0
+
+    for cluster_id in range(n_components):
+        mask = labels == cluster_id
+        cluster_sum_v = np.sum(values[mask])
+
+        if cluster_sum_v > threshold:
+            final_labels[mask] = valid_cluster_counter
+            cluster_points = points_xyz[mask]
+
+            valid_clusters.append(
+                {
+                    "valid_cluster_id": valid_cluster_counter,
+                    "original_component_id": cluster_id,
+                    "sum_v": cluster_sum_v,
+                    "point_count": np.sum(mask),
+                    "point_indices": np.where(mask)[0],
+                    "centroid": np.mean(cluster_points, axis=0),
+                }
+            )
+            valid_cluster_counter += 1
+
+    # Add cluster labels back to a copy of the DataFrame
+    df_annotated = df.copy()
+    df_annotated["cluster_id"] = final_labels
+
+    print(
+        f"Found {len(valid_clusters)} valid clusters out of {n_components} total components."
+    )
+    return valid_clusters, df_annotated
+
+
+def pair_cluster(points: pd.DataFrame, channels: list[str], distance: float):
     """Pair clusters that are less than the distance away.
 
     Parameters
@@ -494,12 +585,12 @@ def pair_cluster(points: pd.DataFrame, C1: str, C2: str, distance: float):
     pd.DataFrame
         List of pairs
     """
-    X1 = points[points["C"] == C1][["Z", "Y", "X"]].to_numpy()
-    X2 = points[points["C"] == C2][["Z", "Y", "X"]].to_numpy()
+    X1 = points[points["C"] == channels[0]][["Z", "Y", "X"]].to_numpy()
+    X2 = points[points["C"] == channels[1]][["Z", "Y", "X"]].to_numpy()
 
     from scipy.spatial.distance import cdist
 
     D = cdist(X1, X2) < distance
 
     pairs = np.where(D)
-    return pd.DataFrame({"C1": pairs[0], "C2": pairs[1]})
+    return pd.DataFrame({channels[0]: pairs[0], channels[1]: pairs[1]})

@@ -125,7 +125,7 @@ def _detect_puncta_log(
     Returns
     -------
     pd.DataFrame
-        DataFrame with coordinates (Z, Y, X), channel (C), and intensity.
+        DataFrame with coordinates (Z, Y, X), channel (C), and intensity (V).
     """
     # Compute scale in pixels
     voxel = np.array([(data[a][1].values - data[a][0].values) for a in ["Z", "Y", "X"]])
@@ -166,12 +166,12 @@ def _detect_puncta_log(
     props = ski.measure.regionprops(labels, np.asarray(data.data))
 
     if len(props) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
     coords = np.array(
         [[*p.centroid_weighted, p.area, p.intensity_mean] for p in props if p.area > 9]
     )
     if len(coords) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
 
     # Scale spatial coordinates
     coords[:, :3] = origin + voxel * coords[:, :3]
@@ -192,8 +192,8 @@ def _detect_puncta_log(
             "Y": coords[:, 1],
             "X": coords[:, 2],
             "C": data.C.item() if "C" in data.coords else 0,
-            "intensity": coords[:, 3] * coords[:, 4],
-            "area": coords[:, 3],
+            "V": coords[:, 3] * coords[:, 4],
+            "A": coords[:, 3],
         }
     )
 
@@ -238,5 +238,5 @@ def detect_puncta(
         points[-1]["index"] = points[-1]["index"].astype(int)
 
     if len(points) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "intensity", "area", "index"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A", "index"])
     return pd.concat(points, ignore_index=True)
