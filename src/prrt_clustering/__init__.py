@@ -8,6 +8,7 @@ from .clustering import (
     cluster_dbscan,
     create_synthetic_point_cloud,
     find_clusters,
+    find_synapses,
     pair_cluster,
 )
 from .drift import correct_z_drift
@@ -28,4 +29,5 @@ __all__ = [
     "clean_points_besag",
     "find_clusters",
     "pair_cluster",
+    "find_synapses",
 ]

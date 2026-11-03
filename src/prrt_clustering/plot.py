@@ -53,25 +53,27 @@ def plot_data(data: xr.DataArray, split: bool = True, fig=None, axes=None):
                 axes = [axes] * n_groups if not split else [axes]
             fig = axes[0].figure
 
+        axes_dict = {n: axes[k] for k, (n, _) in enumerate(groups)}
+
         # If split display each channel
         if split:
-            for k, (name, sub_data) in enumerate(groups):
+            for name, sub_data in groups:
                 plane = np.array(sub_data.max("Z")).astype(float).squeeze()
                 a, b = plane.min(), plane.max()
                 if b > a:
                     plane = (plane - a) / (b - a)
-                axes[k].imshow(plane, extent=extent, cmap="gray")
-                axes[k].set(title=name)
+                axes_dict[name].imshow(plane, extent=extent, cmap="gray")
+                axes_dict[name].set(title=name)
         else:
             rgb = np.zeros((data.sizes["Y"], data.sizes["X"], 3))
-            for k, (_, sub_data) in enumerate(groups):
+            for name, sub_data in groups:
                 plane = np.array(sub_data.max("Z")).astype(float).squeeze()
                 a, b = plane.min(), plane.max()
                 if b > a:
                     plane = (plane - a) / (b - a)
                 rgb = np.maximum(rgb, np.expand_dims(plane, 2) @ cmap[k % len(cmap)])
 
-            axes[0].imshow(rgb, extent=extent)
+            axes_dict[name].imshow(rgb, extent=extent)
     else:
         # Only one channel
         if axes is None:
@@ -90,10 +92,12 @@ def plot_data(data: xr.DataArray, split: bool = True, fig=None, axes=None):
     if split:
         fig.tight_layout()
 
-    return fig, axes
+    return fig, axes_dict
 
 
-def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=None):
+def plot_points(
+    points: pd.DataFrame, ms: float = 40, split: bool = False, axes_dict=None
+):
     """Display points.
 
     Parameters
@@ -104,7 +108,7 @@ def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=
         Marker size passed to plt.plot, by default 40.
     split : bool, optional
         Split each channel into a different axes, by default False.
-    axes : matplotlib.Axes or array of Axes, optional
+    axes_dict : dict(str,matplotlib.Axes)  optional
         Existing axes to plot on.
 
     Returns
@@ -119,48 +123,53 @@ def plot_points(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=
         cmap = np.array([[1, 0, 0]] * 4)
     else:
         cmap = np.array([[1, 0.1, 1], [1, 0.1, 0.1], [0.1, 0.9, 0.1], [0.1, 0.1, 1]])
-
-    groups = list(points.groupby("index", sort=False))
+    groups = list(points.groupby("C"))
     n_groups = len(groups)
 
-    # Set up axes based on the split parameter or provided axes
-    if axes is None:
-        if split:
-            fig, axes = plt.subplots(1, n_groups, squeeze=False)
-            axes = axes[0]  # Flatten 2D array to 1D
-        else:
-            fig, ax = plt.subplots()
-            axes = [ax] * n_groups  # Broadcast single axis
-    else:
-        if not isinstance(axes, (list, np.ndarray, tuple)):
-            axes = [axes] * n_groups if not split else [axes]
-        if len(axes) < n_groups:
-            raise ValueError(
-                f"Number of provided axes {len(axes)} does not match number "
-                f"of channel groups ({n_groups})."
-            )
-        fig = axes[0].figure
+    cmap_dict = {n: cmap[k % len(cmap)] for k, (n, _) in enumerate(groups)}
 
+    # Set up axes based on the split parameter or provided axes
+    # if axes is None:
+    #     if split:
+    #         fig, axes = plt.subplots(1, n_groups, squeeze=False)
+    #         axes = axes[0]  # Flatten 2D array to 1D
+    #     else:
+    #         fig, ax = plt.subplots()
+    #         axes = [ax] * n_groups  # Broadcast single axis
+    # else:
+    #     if not isinstance(axes, dict):
+    #         axes = [axes] * n_groups if not split else [axes]
+    #     if len(axes) < n_groups:
+    #         raise ValueError(
+    #             f"Number of provided axes {len(axes)} does not match number "
+    #             f"of channel groups ({n_groups})."
+    #         )
+    #     fig = axes[0].figure
+
+    # axes_dict = {n: axes[k] for k, (n, _) in enumerate(groups)}
     # Unified plotting loop
-    for k, pts in groups:
-        channel_index = int(np.asarray(k).item())
-        axes[channel_index].plot(
+    for name, pts in groups:
+        axes_dict[name].plot(
             pts["X"],
             pts["Y"],
             ".",
-            color=cmap[channel_index % len(cmap)],
+            color=cmap_dict[name],
             mfc="none",
             ms=ms,
             alpha=0.7,
         )
 
+    fig = axes_dict[list(axes_dict.keys())[0]].figure
+
     if split:
         fig.tight_layout()
 
-    return fig, axes
+    return fig, axes_dict
 
 
-def plot_clusters(points: pd.DataFrame, ms: float = 40, split: bool = False, axes=None):
+def plot_clusters(
+    points: pd.DataFrame, ms: float = 40, split: bool = False, axes_dict: dict = {}
+):
     """Display points.
 
     Parameters
@@ -171,7 +180,7 @@ def plot_clusters(points: pd.DataFrame, ms: float = 40, split: bool = False, axe
         Marker size passed to plt.plot, by default 40.
     split : bool, optional
         Split each channel into a different axes, by default False.
-    axes : matplotlib.Axes or array of Axes, optional
+    axes : dictmatplotlib.Axes or array of Axes, optional
         Existing axes to plot on.
 
     Returns
@@ -182,36 +191,29 @@ def plot_clusters(points: pd.DataFrame, ms: float = 40, split: bool = False, axe
     if points is None:
         return None
 
-    if split:
-        cmap = np.array([[1, 0, 0]] * 4)
-    else:
-        cmap = np.array([[1, 0.1, 1], [1, 0.1, 0.1], [0.1, 0.9, 0.1], [0.1, 0.1, 1]])
+    # n_groups = len(groups)
 
-    groups = list(points.groupby("index", sort=False))
-    n_groups = len(groups)
-
-    # Set up axes based on the split parameter or provided axes
-    if axes is None:
-        if split:
-            fig, axes = plt.subplots(1, n_groups, squeeze=False)
-            axes = axes[0]  # Flatten 2D array to 1D
-        else:
-            fig, ax = plt.subplots()
-            axes = [ax] * n_groups  # Broadcast single axis
-    else:
-        if not isinstance(axes, (list, np.ndarray, tuple)):
-            axes = [axes] * n_groups if not split else [axes]
-        if len(axes) < n_groups:
-            raise ValueError(
-                f"Number of provided axes {len(axes)} does not match number "
-                f"of channel groups ({n_groups})."
-            )
-        fig = axes[0].figure
+    # # Set up axes based on the split parameter or provided axes
+    # if axes is None:
+    #     if split:
+    #         fig, axes = plt.subplots(1, n_groups, squeeze=False)
+    #         axes = axes[0]  # Flatten 2D array to 1D
+    #     else:
+    #         fig, ax = plt.subplots()
+    #         axes = [ax] * n_groups  # Broadcast single axis
+    # else:
+    #     if not isinstance(axes, (list, np.ndarray, tuple)):
+    #         axes = [axes] * n_groups if not split else [axes]
+    #     if len(axes) < n_groups:
+    #         raise ValueError(
+    #             f"Number of provided axes {len(axes)} does not match number "
+    #             f"of channel groups ({n_groups})."
+    #         )
+    #     fig = axes[0].figure
 
     # Unified plotting loop
-    for k, pts in groups:
-        channel_index = int(np.asarray(k).item())
-        axes[channel_index].scatter(
+    for n, pts in points.groupby("C"):
+        axes_dict[n].scatter(
             pts["X"],
             pts["Y"],
             c=pts["cluster"],
@@ -221,7 +223,9 @@ def plot_clusters(points: pd.DataFrame, ms: float = 40, split: bool = False, axe
             alpha=0.5,
         )
 
+    fig = axes_dict[list(axes_dict.keys())[0]].figure
+
     if split:
         fig.tight_layout()
 
-    return fig, axes
+    return fig, axes_dict

@@ -200,8 +200,7 @@ def _detect_puncta_log(
 
 def detect_puncta(
     data: xr.DataArray,
-    scale_um: list[float] = [0.1, 0.1, 0.1, 0.1],
-    specificity: list[float] = [3, 3, 3, 3],
+    parameters: dict,
     subpixel: bool = False,
 ) -> pd.DataFrame:
     """Detect puncta in a multi-channel dataset.
@@ -210,8 +209,8 @@ def detect_puncta(
     ----------
     data: xr.DataArray
         Input array
-    scale_um: list[float] | float
-    specificity: list[float] | float
+    parameters: dict
+        Dictionary with channel name mapping to parameters
 
     Returns
     -------
@@ -221,22 +220,17 @@ def detect_puncta(
     points = []
     dims = [data[d] for d in data.dims if d not in ["Z", "Y", "X"]]
     if not dims:
-        return _detect_puncta_log(
-            data, scale_um=scale_um, specificity=specificity, subpixel=subpixel
-        )
-    for index, coords in enumerate(product(*dims)):
+        raise NotImplemented("No implemented")
+    for coords in product(*dims):
         cdict = {c.name: c.data.item() for c in coords}
         points.append(
             _detect_puncta_log(
                 data.sel(cdict),
-                scale_um=scale_um[index],
-                specificity=specificity[index],
+                **parameters[cdict["C"]],
                 subpixel=subpixel,
             )
         )
-        points[-1]["index"] = index
-        points[-1]["index"] = points[-1]["index"].astype(int)
 
     if len(points) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A", "index"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
     return pd.concat(points, ignore_index=True)
