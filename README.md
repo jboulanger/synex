@@ -43,7 +43,8 @@ For each detected puncta:
 
 For each synapse:
 - Number of puncta in each channel
-- Distances A1 to 
+- Number of A1-PRRT complexes
+- Distance to each other
 
 Summary metrics:
 - Number of puncta per channel
@@ -51,3 +52,13 @@ Summary metrics:
 - Number of pair of clusters in RIM and PSD channels synapses.
 - Number of synpase with A1
 - Number of synpase with PRRT
+
+
+## Testing against complete spatial randomness
+The number of points in a ball of radius R is 
+$$
+\frac{4}{3}\lambda \pi R^3
+$$
+the probability of observing k points in this ball is then given by the Poisson distribution with mean $\mu=\frac{4}{3}\lambda \pi R^3$.
+
+The probability to observe a pair of point at a distance less than R from two points process is

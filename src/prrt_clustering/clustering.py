@@ -7,6 +7,7 @@ import pandas as pd
 from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import KDTree
+from scipy.stats import poisson
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import DBSCAN
 from sklearn.decomposition import PCA
@@ -908,3 +909,187 @@ def quantification(
     return pd.DataFrame(
         data=acc, index=unique_synapses.astype(np.uint64), columns=unique_channels
     )
+
+
+def compute_union_of_balls_volume(
+    coords: np.ndarray, ball_radius: float, voxel_size: float
+) -> float:
+    """Estimate the volume of the union of overlapping balls centered at `coords`.
+
+    Parameters
+    ----------
+    coords : np.ndarray
+        Array of shape (N, 3) containing Z, Y, X coordinates.
+    ball_radius : float
+        Radius of the ball around each point.
+    voxel_size : float, optional
+        Resolution of grid. Defaults to ball_radius / 3 for accuracy.
+
+    Returns
+    -------
+    float
+        Total volume occupied by the union of balls.
+    """
+    if voxel_size is None:
+        voxel_size = ball_radius / 3.0
+    # Get bounding box limits expanded by the ball radius
+    min_coords = coords.min(axis=0) - ball_radius
+    max_coords = coords.max(axis=0) + ball_radius
+
+    # Create 3D grid axes
+    z_range = np.arange(min_coords[0], max_coords[0], voxel_size)
+    y_range = np.arange(min_coords[1], max_coords[1], voxel_size)
+    x_range = np.arange(min_coords[2], max_coords[2], voxel_size)
+
+    grid = (
+        np.vstack(np.meshgrid(z_range, y_range, x_range, indexing="ij"))
+        .reshape(3, -1)
+        .T
+    )
+
+    # Check which grid voxels fall within ball_radius of ANY point
+    tree = KDTree(coords)
+    # query_ball_point with count_only=True returns indices of points within distance
+    occupied_voxels = tree.query_ball_point(grid, r=ball_radius, return_length=True)
+
+    num_occupied = np.count_nonzero(occupied_voxels)
+    voxel_volume = voxel_size**3
+
+    return float(num_occupied * voxel_volume)
+
+
+def expected_number_of_pair(
+    points: pd.DataFrame,
+    channels: list[str],
+    max_distance: float,
+    ball_radius=3,
+    VW=None,
+) -> float:
+    """Compute the expected number of point pairs at less than a max_distance.
+
+    Parameters
+    ----------
+    points: pd.DataFrame
+        Data with columns "Z","Y","X","C","distance to {channels[1]}"
+    channels: list[str]
+        Value of C to filter on
+    max_distance:float
+        Maximum distance
+
+    Returns
+    -------
+    float
+        Expected number of points at a distance less than max_distance.
+    """
+    # Bounding box volume VW
+    # VW = np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0))
+    if VW is None:
+        VW = compute_union_of_balls_volume(
+            points[["Z", "Y", "X"]].to_numpy(), ball_radius, voxel_size=None
+        )
+    print(VW, np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0)))
+
+    # Correct 3D ball volume: (4/3) * pi * R^3
+    Vd = (4.0 / 3.0) * np.pi * (max_distance**3)
+
+    n1 = len(points[points["C"] == channels[0]])
+    n2 = len(points[points["C"] == channels[1]])
+
+    # Expected number of pairs
+    mu = (n1 * n2 / VW) * Vd
+    return mu
+
+
+def compute_pair_pvalue(
+    points: pd.DataFrame, channels: list[str], max_distance: float, VW=None
+) -> float:
+    """Compute the p-value to observe pairs.
+
+    Parameters
+    ----------
+    points: pd.DataFrame
+        Data with columns "Z","Y","X","C","distance to {channels[1]}"
+    channels: list[str]
+        Value of C to filter on
+    max_distance:float
+        Maximum distance
+
+    Returns
+    -------
+    float
+        pvalue to observe the points at a distance less than max_distance.
+    """
+    mu = expected_number_of_pair(points, channels, max_distance, VW)
+
+    # Extract coordinates for each channel dynamically based on parameters
+    pts1 = points[points["C"] == channels[0]][["Z", "Y", "X"]].to_numpy()
+    pts2 = points[points["C"] == channels[1]][["Z", "Y", "X"]].to_numpy()
+
+    if len(pts1) == 0 or len(pts2) == 0:
+        return 1.0
+
+    # Build KD-trees and count neighboring pairs efficiently
+    tree1 = KDTree(pts1)
+    tree2 = KDTree(pts2)
+    n0 = tree1.count_neighbors(
+        tree2, max_distance
+    )  # Counts pairs (x in pts1, y in pts2) with dist <= max_distance
+
+    # Correct Poisson upper-tail p-value: P(N >= n0) = 1 - P(N <= n0 - 1)
+    p_val = 1 - poisson.cdf(n0 - 1, mu)
+    return float(p_val)
+
+
+def synapse_stats(points):
+    """Compute statistics for each synapse."""
+    records = []
+    for n, g in points[points["synapse_id"] >= 0].groupby("synapse_id"):
+        records.append(
+            {
+                "synapse": int(n),
+                "Number of RIM puncta": len(g[g["C"] == "RIM"]),
+                "Number of PSD puncta": len(g[g["C"] == "PSD"]),
+                "Number of A1 puncta": len(g[g["C"] == "A1"]),
+                "Number of PRRT puncta": len(g[g["C"] == "PRRT"]),
+                "Number of A1-PRRT complex": len(g[g["pair_id"] >= 0]),
+                "Mean distance PRRT:PSD": g[g["C"] == "PRRT"]["distance to PSD"].mean(),
+                "Mean distance PRRT:RIM": g[g["C"] == "PRRT"]["distance to RIM"].mean(),
+                "Mean distance A1:PSD": g[g["C"] == "A1"]["distance to PSD"].mean(),
+                "Mean distance A1:RIM": g[g["C"] == "A1"]["distance to RIM"].mean(),
+                "Mean distance PRRT:A1": g[g["C"] == "PRRT"]["distance to A1"].mean(),
+            }
+        )
+    return pd.DataFrame.from_records(records)
+
+
+def global_stats(points, max_distance, ball_radius):
+    """Compute global statistics."""
+    # Precompute
+    coords = points[["X", "Y", "Z"]].to_numpy()
+    # VW = compute_union_of_balls_volume(coords, ball_radius, None)
+    VW = np.prod(np.ptp(coords, axis=0))
+    return {
+        **{
+            f"Number of {c} puncta": len(points[points["C"] == c])
+            for c in points["C"].unique()
+        },
+        **{
+            f"Number of {c} cluster": len(
+                (points[(points["C"] == c) & (points["cluster_id"] >= 0)])
+            )
+            for c in ["PSD", "RIM"]
+        },
+        "Number of synpases": points["synapse_id"].nunique(),
+        "Number of GluA1 synpases": points[
+            (points["C"] == "A1") & (points["synapse_id"] >= 0)
+        ]["synapse_id"].nunique(),
+        "Number of PRRT+GluA1 synpases": points[
+            (points["pair_id"] >= 0) & (points["synapse_id"] >= 0)
+        ]["synapse_id"].nunique(),
+        **{
+            f"pvalue {p[0]}:{p[1]}": compute_pair_pvalue(
+                points, list(p), max_distance, VW=VW
+            )
+            for p in permutations(points["C"].unique(), 2)
+        },
+    }
