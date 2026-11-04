@@ -149,15 +149,16 @@ def plot_points(
     # axes_dict = {n: axes[k] for k, (n, _) in enumerate(groups)}
     # Unified plotting loop
     for name, pts in groups:
-        axes_dict[name].plot(
-            pts["X"],
-            pts["Y"],
-            ".",
-            color=cmap_dict[name],
-            mfc="none",
-            ms=ms,
-            alpha=0.7,
-        )
+        if name in axes_dict.keys():
+            axes_dict[name].plot(
+                pts["X"],
+                pts["Y"],
+                ".",
+                color=cmap_dict[name],
+                mfc="none",
+                ms=ms,
+                alpha=0.7,
+            )
 
     fig = axes_dict[list(axes_dict.keys())[0]].figure
 

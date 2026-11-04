@@ -10,6 +10,7 @@ from .clustering import (
     find_clusters,
     find_synapses,
     pair_cluster,
+    pair_puncta,
 )
 from .drift import correct_z_drift
 from .plot import plot_clusters, plot_data, plot_points
@@ -30,4 +31,5 @@ __all__ = [
     "find_clusters",
     "pair_cluster",
     "find_synapses",
+    "pair_puncta",
 ]
