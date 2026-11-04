@@ -1,5 +1,7 @@
 """Clustering of labeled points."""
 
+from itertools import permutations
+
 import numpy as np
 import pandas as pd
 from scipy.sparse import coo_matrix
@@ -497,95 +499,6 @@ def cluster_dbscan(
     return new_points, clusters
 
 
-def find_clusters(
-    df,
-    max_distance,
-    threshold,
-):
-    """Find distance-connected clusters in a point cloud DataFrame where the sum of V exceeds threshold.
-
-    Parameters
-    ----------
-    - df: pd.DataFrame containing the point cloud data
-    - max_distance: float, maximum distance d for neighborhood connection (eps)
-    - threshold: float, minimum sum of V required (t)
-
-    Returns
-    -------
-    - df_annotated: pd.DataFrame with an added 'cluster_id' column (-1 for noise/filtered out)
-    - valid_clusters: list of dicts containing cluster metadata
-    """
-    # 1. Extract coordinates and values as NumPy arrays for speed
-    pos = ["Z", "Y", "X"]
-    points_xyz = df[pos].to_numpy()
-    values = df["V"].to_numpy()
-    n_points = len(df)
-
-    if n_points == 0:
-        return df.copy(), []
-
-    tree = KDTree(points_xyz)
-
-    pairs = tree.query_pairs(r=max_distance, output_type="set")
-
-    if not pairs:
-        print("No pairs found within max_distance.")
-        df_out = df.copy()
-        df_out["cluster_id"] = -1
-        return df_out, []
-
-    # Build adjacency structure for connected components
-    row = np.array([p[0] for p in pairs])
-    col = np.array([p[1] for p in pairs])
-    data = np.ones(len(pairs))
-
-    # Make symmetric
-    row_sym = np.concatenate([row, col])
-    col_sym = np.concatenate([col, row])
-    data_sym = np.concatenate([data, data])
-
-    graph = coo_matrix((data_sym, (row_sym, col_sym)), shape=(n_points, n_points))
-
-    print("Computing connected components...")
-    n_components, labels = connected_components(
-        csgraph=graph, directed=False, return_labels=True
-    )
-
-    # Evaluate clusters against threshold
-    valid_clusters = []
-    final_labels = np.full(n_points, -1, dtype=int)  # -1 represents filtered-out points
-    valid_cluster_counter = 0
-
-    for cluster_id in range(n_components):
-        mask = labels == cluster_id
-        cluster_sum_v = np.sum(values[mask])
-
-        if cluster_sum_v > threshold:
-            final_labels[mask] = valid_cluster_counter
-            cluster_points = points_xyz[mask]
-            centroid = np.mean(cluster_points, axis=0)
-            valid_clusters.append(
-                {
-                    "valid_cluster_id": valid_cluster_counter,
-                    "original_component_id": cluster_id,
-                    "sum_v": cluster_sum_v,
-                    "point_count": np.sum(mask),
-                    "point_indices": np.where(mask)[0],
-                    "centroid": centroid,
-                }
-            )
-            valid_cluster_counter += 1
-
-    # Add cluster labels back to a copy of the DataFrame
-    df_annotated = df.copy()
-    df_annotated["cluster_id"] = final_labels
-
-    print(
-        f"Found {len(valid_clusters)} valid clusters out of {n_components} total components."
-    )
-    return df_annotated, valid_clusters
-
-
 def pair_cluster(
     points: pd.DataFrame,
     channels: list[str],
@@ -706,6 +619,66 @@ def pair_cluster(
             )
 
     return new_points, df[cols_output]
+
+
+def associate_to_paired_cluster(
+    points: pd.DataFrame, max_distance: float = 1, column_id: str = "synapse_id"
+) -> pd.DataFrame:
+    """Associate points to closest paired clusters.
+
+    The points dataframe has the columns X, Y, Z, pair_cluster. For each row of points,
+    assigns the 'pair_column' to the closest the 'pair_column' value of the row within
+    max_distance.
+
+    Parameters
+    ----------
+    points: pd.DataFrame
+        Points with X, Y, Z, (and pair_column if it exists)
+    max_distance: float, optional
+        Maximum distance for association
+    pair_column: str, optional
+        The name of the column to use (default "synapse_id")
+
+    Returns
+    -------
+    pd.DataFrame
+        With the 'pair_column' computed for each reachable point.
+    """
+    pos = ["X", "Y", "Z"]
+    new_points = points.copy()
+
+    # Ensure the pair_column exists in the dataframe
+    if column_id not in new_points.columns:
+        new_points[column_id] = -1
+
+    # Filter synapse points (synapse >= 0)
+    synapse_mask = new_points[column_id] >= 0
+    synapse_points = new_points[synapse_mask]
+
+    if synapse_points.empty or new_points.empty:
+        return new_points
+
+    # Extract coordinates
+    syn_coords = synapse_points[pos].to_numpy()
+    all_coords = new_points[pos].to_numpy()
+
+    # Build KD-tree from synapse-labeled points
+    tree = KDTree(syn_coords)
+
+    # Query the closest synapse for every point (k=1)
+    distances, indices = tree.query(all_coords, k=1)
+
+    # Filter points within max_distance threshold
+    valid_mask = np.logical_and(distances <= max_distance, np.logical_not(synapse_mask))
+
+    # Get the actual synapse IDs corresponding to the nearest tree indices
+    synapse_ids = synapse_points[column_id].to_numpy()
+    closest_synapse_ids = synapse_ids[indices]
+
+    # Assign the closest synapse ID to valid points
+    new_points.loc[valid_mask, column_id] = closest_synapse_ids[valid_mask]
+
+    return new_points
 
 
 def pair_puncta(
@@ -829,7 +802,51 @@ def pair_puncta(
     return new_points, df[cols_output]
 
 
-def quantification(points: pd.DataFrame, distance: float) -> pd.DataFrame:
+def compute_distances(points: pd.DataFrame) -> pd.DataFrame:
+    """Compute the distance from each point to the closest point in other channels (C).
+
+    Parameters
+    ----------
+    points: pd.DataFrame
+        Data frame with columns X, Y, Z, C
+
+    Returns
+    -------
+    pd.DataFrame:
+        The input dataframe with the distance to the closest point in each of the other channels.
+    """
+    pos = ["X", "Y", "Z"]
+    channels = points["C"].unique()
+
+    # List directed pair (c_trg -> c_ref)
+    channel_pairs = permutations(channels, 2)
+    new_points = points.copy()
+
+    for c_trg, c_ref in channel_pairs:
+        trg_mask = points["C"] == c_trg
+        ref_mask = points["C"] == c_ref
+
+        # If either channel is empty, skip
+        if not trg_mask.any() or not ref_mask.any():
+            continue
+
+        trg = points[trg_mask][pos].to_numpy()
+        ref = points[ref_mask][pos].to_numpy()
+        i_trg = points[trg_mask].index.to_numpy()
+
+        # Build KD-tree on the reference channel and query from the target channel
+        tree = KDTree(ref)
+        dist, _ = tree.query(trg, k=1)
+
+        # Assign distance for points in c_trg to the closest point in c_ref
+        new_points.loc[i_trg, f"distance to {c_ref}"] = dist
+
+    return new_points
+
+
+def quantification(
+    points: pd.DataFrame, distance: float, synapse_column: str = "synapse_id"
+) -> pd.DataFrame:
     """Quantify presence of markers for each synapse.
 
     Group the points by synapse.
@@ -846,22 +863,18 @@ def quantification(points: pd.DataFrame, distance: float) -> pd.DataFrame:
     pd.DataFrame
         Dataframe with a column per unique C value and a row per unique synapse value
         reporting the number of points in the vicinity of the synapse.
-
-    TODO
-    ----
-    Add the distance
     """
     pos = ["X", "Y", "Z"]
 
     # Filter synapse points (synapse >= 0)
-    synapse_mask = points["synapse"] >= 0
+    synapse_mask = points[synapse_column] >= 0
     synapse_points = points[synapse_mask]
 
     if synapse_points.empty or points.empty:
         return pd.DataFrame(columns=points["C"].unique())
 
     # Mappings for unique synapses and channels
-    unique_synapses = np.sort(synapse_points["synapse"].unique())
+    unique_synapses = np.sort(synapse_points[synapse_column].unique())
     synapse_to_idx = {syn: i for i, syn in enumerate(unique_synapses)}
 
     unique_channels = points["C"].unique()
@@ -882,7 +895,7 @@ def quantification(points: pd.DataFrame, distance: float) -> pd.DataFrame:
 
     # Create index mapping
     channels_arr = points["C"].map(channel_to_idx).to_numpy()
-    synapse_arr = synapse_points["synapse"].map(synapse_to_idx).to_numpy()
+    synapse_arr = synapse_points[synapse_column].map(synapse_to_idx).to_numpy()
 
     # Aggregate counts using numpy vectorized accumulation
     for i, nb_indices in enumerate(neighbors):
@@ -892,4 +905,6 @@ def quantification(points: pd.DataFrame, distance: float) -> pd.DataFrame:
         syn_idxs = synapse_arr[nb_indices]
         np.add.at(acc[:, m], syn_idxs, 1)
 
-    return pd.DataFrame(data=acc, index=unique_synapses, columns=unique_channels)
+    return pd.DataFrame(
+        data=acc, index=unique_synapses.astype(np.uint64), columns=unique_channels
+    )

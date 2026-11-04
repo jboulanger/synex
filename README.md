@@ -41,6 +41,10 @@ For each detected puncta:
 - Distance to PSD in synapse
 - Distance to RIM in synapse
 
+For each synapse:
+- Number of puncta in each channel
+- Distances A1 to 
+
 Summary metrics:
 - Number of puncta per channel
 - Number of clusters in RIM and PSD channels
