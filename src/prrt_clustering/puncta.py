@@ -220,7 +220,7 @@ def detect_puncta(
     points = []
     dims = [data[d] for d in data.dims if d not in ["Z", "Y", "X"]]
     if not dims:
-        raise NotImplemented("No implemented")
+        raise NotImplementedError("No implemented")
     for coords in product(*dims):
         cdict = {c.name: c.data.item() for c in coords}
         points.append(

@@ -2,12 +2,14 @@
 
 from .clustering import (
     cluster_dbscan,
-    compute_pair_pvalue,
+    compute_poisson_pair_pvalue,
     create_synthetic_point_cloud,
     global_stats,
     pair_cluster,
     pair_puncta,
     synapse_stats,
+    associate_to_paired_cluster,
+    compute_distances,
 )
 from .drift import correct_z_drift
 from .plot import plot_clusters, plot_data, plot_points
@@ -24,6 +26,8 @@ __all__ = [
     "pair_cluster",
     "pair_puncta",
     "global_stats",
-    "compute_pair_pvalue",
+    "compute_poisson_pair_pvalue",
     "synapse_stats",
+    "associate_to_paired_cluster",
+    "compute_distances",
 ]

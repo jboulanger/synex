@@ -124,11 +124,11 @@ def plot_points(
     else:
         cmap = np.array([[1, 0.1, 1], [1, 0.1, 0.1], [0.1, 0.9, 0.1], [0.1, 0.1, 1]])
     groups = list(points.groupby("C"))
-    n_groups = len(groups)
 
     cmap_dict = {n: cmap[k % len(cmap)] for k, (n, _) in enumerate(groups)}
 
     # Set up axes based on the split parameter or provided axes
+    # n_groups = len(groups)
     # if axes is None:
     #     if split:
     #         fig, axes = plt.subplots(1, n_groups, squeeze=False)
@@ -230,3 +230,160 @@ def plot_clusters(
         fig.tight_layout()
 
     return fig, axes_dict
+
+
+def bagel_chart(data, center_text=None, colors=None, ax=None):
+    """Create a compact, modern bagel chart with tightly aligned callout labels.
+
+    Parameters
+    ----------
+    data : dict
+        Dictionary with key-value pairs to plot.
+    center_text : str, optional
+        Text to display in the center hole of the bagel.
+    colors : list, optional
+        Custom color palette for the wedges.
+    """
+    values = list(data.values())
+    total = sum(values)
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 10))
+
+    if colors is None:
+        colors = plt.cm.Set2(np.linspace(0, 1, len(data)))
+
+    wedges, texts = ax.pie(
+        values,
+        wedgeprops=dict(width=0.4, edgecolor="white", linewidth=2),
+        startangle=90,
+        colors=colors,
+    )
+
+    bbox_props = dict(
+        boxstyle="round,pad=0.3",
+        fc="white",
+        ec="lightgray",
+        lw=1,  # shadow=True
+    )
+    kw = dict(
+        arrowprops=dict(
+            arrowstyle="-", connectionstyle="angle,angleA=0,angleB=90", lw=1.1
+        ),
+        bbox=bbox_props,
+        zorder=3,
+        va="center",
+    )
+
+    annotations = [f"{k}\n{val} ({100 * val / total:.1f}%)" for k, val in data.items()]
+
+    for k, p in enumerate(wedges):
+        ang = (p.theta2 - p.theta1) / 2.0 + p.theta1
+        y = np.sin(np.deg2rad(ang))
+        x = np.cos(np.deg2rad(ang))
+        horizontalalignment = {-1: "right", 1: "left"}[int(np.sign(x))]
+        connectionstyle = f"angle,angleA=0,angleB={ang}"
+        kw["arrowprops"].update({"connectionstyle": connectionstyle})
+
+        # 2. Reduced multiplier (1.15 / 1.25) to bring labels closer to the chart
+        ax.annotate(
+            annotations[k],
+            xy=(x, y),
+            xytext=(1.1 * np.sign(x), 1.1 * y),
+            horizontalalignment=horizontalalignment,
+            multialignment="center",  # Keeps lines centered relative to each other
+            fontsize=11,
+            weight="semibold",
+            **kw,
+        )
+
+    if center_text:
+        ax.text(
+            0,
+            0,
+            center_text,
+            ha="center",
+            va="center",
+            fontsize=11,
+            weight="bold",
+            color="#333333",
+        )
+
+    # ax.set_title("Data Breakdown", fontsize=13, weight="bold", pad=15)
+
+
+def make_the_bagel_plot(gst, sst):
+    data1 = dict()
+    data1["synpatic"] = gst["Number of PRRT+GluA1 synpases"]
+    data1["extra synaptic"] = (
+        gst["Number of PRRT+GluA1 total"] - gst["Number of PRRT+GluA1 synpases"]
+    )
+
+    data2 = dict()
+    data2["PRRT1-containing"] = (sst["Number of PRRT puncta"] >= 0).sum()
+    data2["PRRT1-free"] = (
+        (sst["Number of PRRT puncta"] == 0) & (sst["Number of A1 puncta"] > 0)
+    ).sum()
+    fig, ax = plt.subplots(2, 1, figsize=(5, 5))
+    bagel_chart(data1, "% Total \n GluA1+PRRT1", ax=ax[0])
+    bagel_chart(data2, "% Total \n GluA1 synapses", ax=ax[1])
+
+
+def make_the_histogram_distance(points):
+    dist_prrt_psd = points[(points["C"] == "PRRT") & (points["synapse_id"] >= 0)][
+        "distance to PSD"
+    ]
+    import seaborn as sns
+
+    # Create figure with publication-friendly dimensions
+    fig, ax = plt.subplots(figsize=(8, 4.5))
+
+    # 1. Use Seaborn's histplot with kde=True to automatically add and scale the curve
+    sns.histplot(
+        dist_prrt_psd,
+        bins=25,
+        kde=True,
+        color="#4c72b0",
+        edgecolor="white",
+        linewidth=1.2,
+        alpha=0.85,
+        ax=ax,
+        line_kws={
+            "color": "#1b263b",
+            "linewidth": 2.2,
+        },  # Customizes the KDE line appearance
+    )
+
+    # 2. Emphasized threshold line
+    threshold = 0.4
+    ax.axvline(x=threshold, color="#9F9E9E", linestyle="--", linewidth=2)
+
+    # 3. Add text annotation for the threshold line
+    ax.text(
+        threshold + 0.02,
+        ax.get_ylim()[1] * 0.85,
+        f"Cutoff: {threshold} μm",
+        color="#9F9E9E",
+        weight="bold",
+        fontsize=9,
+        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="#9F9E9E", alpha=0.8),
+    )
+
+    # Axis limits and labels with clean typography
+    ax.set_xlim(0, 1)
+    ax.set_title(
+        "PRRT1 Distance Distribution to PSD95", fontsize=13, weight="bold", pad=15
+    )
+    ax.set_xlabel("Distance to PSD95 [μm]", fontsize=11, weight="semibold")
+    ax.set_ylabel("Number of Detected Synaptic PRRT1", fontsize=11, weight="semibold")
+
+    # 4. Subtle background grid
+    ax.set_axisbelow(True)
+    ax.yaxis.grid(True, linestyle=":", alpha=0.5, color="gray")
+
+    # 5. Minimalist styling: remove top and right borders
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    plt.show()

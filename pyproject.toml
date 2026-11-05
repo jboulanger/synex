@@ -10,12 +10,14 @@ dependencies = [
     "bioio-czi>=3.0.1",
     "ipykernel>=7.4.0",
     "matplotlib>=3.11.2",
+    "microimage",
     "napari[pyqt6]>=0.6.5",
     "numpy>=2.5.4",
     "pandas>=2.0.0",
     "scikit-image>=0.26.0",
     "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
+    "seaborn>=0.13.2",
     "spotiflow>=0.6.5",
 ]
 
@@ -46,6 +48,7 @@ torchvision = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cu126", extra = "cu126" },
 ]
+microimage = { path = "../../../microimage" }
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

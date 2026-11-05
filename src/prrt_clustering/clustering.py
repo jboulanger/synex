@@ -1,6 +1,6 @@
 """Clustering of labeled points."""
 
-from itertools import permutations
+from itertools import permutations, product
 
 import numpy as np
 import pandas as pd
@@ -623,7 +623,7 @@ def pair_cluster(
 
 
 def associate_to_paired_cluster(
-    points: pd.DataFrame, max_distance: float = 1, column_id: str = "synapse_id"
+    points: pd.DataFrame, distance: float = 1, column_id: str = "synapse_id"
 ) -> pd.DataFrame:
     """Associate points to closest paired clusters.
 
@@ -635,7 +635,7 @@ def associate_to_paired_cluster(
     ----------
     points: pd.DataFrame
         Points with X, Y, Z, (and pair_column if it exists)
-    max_distance: float, optional
+    distance: float, optional
         Maximum distance for association
     pair_column: str, optional
         The name of the column to use (default "synapse_id")
@@ -670,7 +670,7 @@ def associate_to_paired_cluster(
     distances, indices = tree.query(all_coords, k=1)
 
     # Filter points within max_distance threshold
-    valid_mask = np.logical_and(distances <= max_distance, np.logical_not(synapse_mask))
+    valid_mask = np.logical_and(distances <= distance, np.logical_not(synapse_mask))
 
     # Get the actual synapse IDs corresponding to the nearest tree indices
     synapse_ids = synapse_points[column_id].to_numpy()
@@ -912,14 +912,14 @@ def quantification(
 
 
 def compute_union_of_balls_volume(
-    coords: np.ndarray, ball_radius: float, voxel_size: float
+    points: pd.DataFrame, ball_radius: float, voxel_size: float
 ) -> float:
     """Estimate the volume of the union of overlapping balls centered at `coords`.
 
     Parameters
     ----------
-    coords : np.ndarray
-        Array of shape (N, 3) containing Z, Y, X coordinates.
+    points : pd.DataFrame
+        Dataframe with Z, Y, X coordinates.
     ball_radius : float
         Radius of the ball around each point.
     voxel_size : float, optional
@@ -930,9 +930,13 @@ def compute_union_of_balls_volume(
     float
         Total volume occupied by the union of balls.
     """
+    coords = points[["Z", "Y", "X"]].to_numpy()
+
     if voxel_size is None:
         voxel_size = ball_radius / 3.0
+
     # Get bounding box limits expanded by the ball radius
+
     min_coords = coords.min(axis=0) - ball_radius
     max_coords = coords.max(axis=0) + ball_radius
 
@@ -949,10 +953,20 @@ def compute_union_of_balls_volume(
 
     # Check which grid voxels fall within ball_radius of ANY point
     tree = KDTree(coords)
-    # query_ball_point with count_only=True returns indices of points within distance
+
+    # query_ball_point in the grid
     occupied_voxels = tree.query_ball_point(grid, r=ball_radius, return_length=True)
 
+    # restrict to the inside of the domain
+    inside_box = np.logical_and(
+        np.all(grid >= coords.min(axis=0), axis=1),
+        np.all(grid <= coords.max(axis=0), axis=1),
+    )
+
+    occupied_voxels = np.logical_and(occupied_voxels > 0, inside_box)
+
     num_occupied = np.count_nonzero(occupied_voxels)
+
     voxel_volume = voxel_size**3
 
     return float(num_occupied * voxel_volume)
@@ -962,8 +976,7 @@ def expected_number_of_pair(
     points: pd.DataFrame,
     channels: list[str],
     max_distance: float,
-    ball_radius=3,
-    VW=None,
+    window_volume=None,
 ) -> float:
     """Compute the expected number of point pairs at less than a max_distance.
 
@@ -975,6 +988,8 @@ def expected_number_of_pair(
         Value of C to filter on
     max_distance:float
         Maximum distance
+    window_volume:float
+        Volume of the analysis window.
 
     Returns
     -------
@@ -982,28 +997,27 @@ def expected_number_of_pair(
         Expected number of points at a distance less than max_distance.
     """
     # Bounding box volume VW
-    # VW = np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0))
-    if VW is None:
-        VW = compute_union_of_balls_volume(
-            points[["Z", "Y", "X"]].to_numpy(), ball_radius, voxel_size=None
-        )
-    print(VW, np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0)))
+    if window_volume is None:
+        window_volume = np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0))
 
     # Correct 3D ball volume: (4/3) * pi * R^3
-    Vd = (4.0 / 3.0) * np.pi * (max_distance**3)
+    ball_volume = (4.0 / 3.0) * np.pi * (max_distance**3)
 
     n1 = len(points[points["C"] == channels[0]])
     n2 = len(points[points["C"] == channels[1]])
 
     # Expected number of pairs
-    mu = (n1 * n2 / VW) * Vd
+    mu = (n1 * n2 / window_volume) * ball_volume
     return mu
 
 
-def compute_pair_pvalue(
-    points: pd.DataFrame, channels: list[str], max_distance: float, VW=None
+def compute_poisson_pair_pvalue(
+    points: pd.DataFrame,
+    channels: list[str],
+    max_distance: float,
+    volume_window: float | None = None,
 ) -> float:
-    """Compute the p-value to observe pairs.
+    """Compute the p-value to observe pairs assuming two Poisson point processes.
 
     Parameters
     ----------
@@ -1013,13 +1027,15 @@ def compute_pair_pvalue(
         Value of C to filter on
     max_distance:float
         Maximum distance
+    volume_window: float, optional
+        Volume of the analysis window
 
     Returns
     -------
     float
         pvalue to observe the points at a distance less than max_distance.
     """
-    mu = expected_number_of_pair(points, channels, max_distance, VW)
+    mu = expected_number_of_pair(points, channels, max_distance, volume_window)
 
     # Extract coordinates for each channel dynamically based on parameters
     pts1 = points[points["C"] == channels[0]][["Z", "Y", "X"]].to_numpy()
@@ -1038,6 +1054,78 @@ def compute_pair_pvalue(
     # Correct Poisson upper-tail p-value: P(N >= n0) = 1 - P(N <= n0 - 1)
     p_val = 1 - poisson.cdf(n0 - 1, mu)
     return float(p_val)
+
+
+def compute_monte_carlo_pair_pvalue(
+    points: pd.DataFrame,
+    channels: list[str],
+    max_distance: float,
+    num_shifts: int = 100,
+    shift_range: np.ndarray | None = None,
+    min_shift: float | None = None,
+):
+    """Compute empirical p-value for spatial co-localization using random shifts.
+
+    Parameters
+    ----------
+    points : pd.DataFrame
+        Dataframe with "Z", "Y", "X", "C" columns.
+    channels : list[str]
+        Two channel names [channel_1, channel_2] to compare.
+    max_distance : float
+        Maximum distance threshold to count a valid pair.
+    num_shifts : int, optional
+        Number of random Monte Carlo shifts (default: 100).
+    shift_range : np.ndarray, optional
+        Maximum shift magnitude along [Z, Y, X] (default to to 10 x max_distance)
+    min_shift : float, optional
+        Minimum shift distance to prevent near-zero shifts (defaults to max_distance).
+
+    Returns
+    -------
+    pvalue : float
+        One-tailed p-value testing if observed pair count is significantly higher
+        than expected by chance.
+    n0 : int
+        Observed pair count at zero shift.
+    counts : np.ndarray
+        Array of pair counts from the randomized shifts.
+    """
+    pts1 = points[points["C"] == channels[0]][["Z", "Y", "X"]].to_numpy()
+    pts2 = points[points["C"] == channels[1]][["Z", "Y", "X"]].to_numpy()
+
+    if len(pts1) == 0 or len(pts2) == 0:
+        return 1.0, 0, np.zeros(num_shifts)
+
+    if shift_range is None:
+        shift_range = np.array([0, 10 * max_distance, 10 * max_distance])
+
+    if min_shift is None:
+        min_shift = max_distance
+
+    tree1 = KDTree(pts1)
+    tree2 = KDTree(pts2)
+    n0 = tree1.count_neighbors(tree2, max_distance)
+
+    counts = np.zeros(num_shifts, dtype=int)
+
+    # Generate shifts, discarding near-zero shifts that don't decorrelate
+    shifts = []
+    while len(shifts) < num_shifts:
+        s = np.random.uniform(-shift_range, shift_range, size=(3,))
+        if np.linalg.norm(s) >= min_shift:
+            shifts.append(s)
+    shifts = np.array(shifts)
+
+    # Compute pair counts under random shifts
+    for k in range(num_shifts):
+        shifted_tree2 = KDTree(pts2 + shifts[k])
+        counts[k] = tree1.count_neighbors(shifted_tree2, max_distance)
+
+    # Standard Monte Carlo p-value formulation (including observed data in baseline)
+    pvalue = (np.sum(counts >= n0) + 1) / (num_shifts + 1)
+
+    return float(pvalue), int(n0), counts
 
 
 def synapse_stats(points):
@@ -1062,12 +1150,19 @@ def synapse_stats(points):
     return pd.DataFrame.from_records(records)
 
 
-def global_stats(points, max_distance, ball_radius):
-    """Compute global statistics."""
-    # Precompute
-    coords = points[["X", "Y", "Z"]].to_numpy()
-    # VW = compute_union_of_balls_volume(coords, ball_radius, None)
-    VW = np.prod(np.ptp(coords, axis=0))
+def global_stats(
+    points: pd.DataFrame, distance: float, ball_radius: float = 2, voxel_size: float = 1
+):
+    """Compute global statistics at the image level.
+
+    Parameters
+    ----------
+    points
+    """
+    # Precompute the volume of the analysis window for efficiency
+    volume_window = compute_union_of_balls_volume(
+        points, ball_radius, voxel_size=voxel_size
+    )
     return {
         **{
             f"Number of {c} puncta": len(points[points["C"] == c])
@@ -1086,10 +1181,25 @@ def global_stats(points, max_distance, ball_radius):
         "Number of PRRT+GluA1 synpases": points[
             (points["pair_id"] >= 0) & (points["synapse_id"] >= 0)
         ]["synapse_id"].nunique(),
+        "Number of PRRT+GluA1 total": int((points["pair_id"] >= 0).sum()),
         **{
-            f"pvalue {p[0]}:{p[1]}": compute_pair_pvalue(
-                points, list(p), max_distance, VW=VW
+            f"Average distance of {p[0]} to {p[1]}": float(
+                points[(points["C"] == p[0]) & (points["synapse_id"] >= 0)][
+                    f"distance to {p[1]}"
+                ].mean()
             )
+            for p in product(["A1", "PRRT"], ["RIM", "PSD"])
+        },
+        **{
+            f"poisson pvalue {p[0]}:{p[1]}": compute_poisson_pair_pvalue(
+                points, list(p), distance, volume_window
+            )
+            for p in permutations(points["C"].unique(), 2)
+        },
+        **{
+            f"monte carlo pvalue {p[0]}:{p[1]}": compute_monte_carlo_pair_pvalue(
+                points, list(p), distance
+            )[0]
             for p in permutations(points["C"].unique(), 2)
         },
     }

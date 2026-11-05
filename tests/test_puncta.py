@@ -53,8 +53,13 @@ def test_detect_puncta_returns_dataframe():
         coords={"C": [0, 1], "Z": axis_z, "Y": axis_y, "X": axis_x},
     )
 
-    df = detect_puncta(da, scale_um=1.0, specificity=1)
+    params = {
+        0: {"scale_um": 1.0, "specificity": 1},
+        1: {"scale_um": 1.0, "specificity": 1},
+    }
+
+    df = detect_puncta(da, params)
     assert isinstance(df, pd.DataFrame)
-    assert set(["Z", "Y", "X", "C", "intensity"]).issubset(df.columns)
+    assert set(["Z", "Y", "X", "C", "V", "A"]).issubset(df.columns)
     assert len(df) > 0
     assert set(df["C"].unique()).issubset({0, 1})
