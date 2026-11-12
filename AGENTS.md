@@ -34,7 +34,7 @@ uv run ruff check
    - Input: `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C',...]`.
    - Method: Clustering and proximity of points < 0.5um in the channels `"A1"` and `"PRRT"`
    - Output: `pandas.DataFrame` with columns `['pair id']`.
-6. **Summarize in table**
+6. **Synapse profiling**
    - Input: `pandas.DataFrame` with columns `['Z', 'Y', 'X', 'C', 'cluster id', 'synapse id', 'synpase distance', 'pair id', 'pair distance']`
    - Method: For each synapse check the proximity of puncta in other channels
    - Output: `pandas.DataFrame` with columns 

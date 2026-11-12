@@ -66,7 +66,7 @@ def plot_data(data: xr.DataArray, split: bool = True, fig=None, axes=None):
                 axes_dict[name].set(title=name)
         else:
             rgb = np.zeros((data.sizes["Y"], data.sizes["X"], 3))
-            for name, sub_data in groups:
+            for k, (name, sub_data) in enumerate(groups):
                 plane = np.array(sub_data.max("Z")).astype(float).squeeze()
                 a, b = plane.min(), plane.max()
                 if b > a:
@@ -108,7 +108,7 @@ def plot_points(
         Marker size passed to plt.plot, by default 40.
     split : bool, optional
         Split each channel into a different axes, by default False.
-    axes_dict : dict(str,matplotlib.Axes)  optional
+    axes_dict : dict(str,matplotlib.Axes), optional
         Existing axes to plot on.
 
     Returns
@@ -232,7 +232,12 @@ def plot_clusters(
     return fig, axes_dict
 
 
-def bagel_chart(data, center_text=None, colors=None, ax=None):
+def bagel_chart(
+    data: dict,
+    center_text: str | None = None,
+    colors: np.ndarray | None = None,
+    ax=None,
+):
     """Create a compact, modern bagel chart with tightly aligned callout labels.
 
     Parameters
@@ -241,8 +246,10 @@ def bagel_chart(data, center_text=None, colors=None, ax=None):
         Dictionary with key-value pairs to plot.
     center_text : str, optional
         Text to display in the center hole of the bagel.
-    colors : list, optional
+    colors : np.ndarray, optional
         Custom color palette for the wedges.
+    ax: axes, optional
+        Optional axes
     """
     values = list(data.values())
     total = sum(values)
@@ -309,10 +316,9 @@ def bagel_chart(data, center_text=None, colors=None, ax=None):
             color="#333333",
         )
 
-    # ax.set_title("Data Breakdown", fontsize=13, weight="bold", pad=15)
 
-
-def make_the_bagel_plot(gst, sst):
+def make_the_bagel_plot(gst: dict, sst: pd.DataFrame):
+    """Create a bagel plot."""
     data1 = dict()
     data1["synpatic"] = gst["Number of PRRT+GluA1 synpases"]
     data1["extra synaptic"] = (
@@ -330,10 +336,12 @@ def make_the_bagel_plot(gst, sst):
 
 
 def make_the_histogram_distance(points):
+    """Compute the histogram of distances."""
+    import seaborn as sns
+
     dist_prrt_psd = points[(points["C"] == "PRRT") & (points["synapse_id"] >= 0)][
         "distance to PSD"
     ]
-    import seaborn as sns
 
     # Create figure with publication-friendly dimensions
     fig, ax = plt.subplots(figsize=(8, 4.5))
@@ -387,3 +395,4 @@ def make_the_histogram_distance(points):
 
     plt.tight_layout()
     plt.show()
+    return dist_prrt_psd

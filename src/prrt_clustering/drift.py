@@ -29,8 +29,8 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
         raise ValueError("Reference and moving images must have the same shape.")
 
     # Ensure floating-point precision
-    ref = reference.astype(np.float64, copy=False)
-    mov = moving.astype(np.float64, copy=False)
+    ref = np.array(reference).astype(np.float64, copy=False)
+    mov = np.array(moving).astype(np.float64, copy=False)
 
     # Filtering
     ref = ndi.gaussian_filter(ref, 1)

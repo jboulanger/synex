@@ -4,8 +4,9 @@ from itertools import permutations, product
 
 import numpy as np
 import pandas as pd
-from scipy.sparse import coo_matrix
-from scipy.sparse.csgraph import connected_components
+
+# from scipy.sparse import coo_matrix
+# from scipy.sparse.csgraph import connected_components
 from scipy.spatial import KDTree
 from scipy.stats import poisson
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -266,8 +267,8 @@ class BesagFeature(BaseEstimator, TransformerMixin):
                 counts[i, :] = 0.0
             else:
                 # Exclude self-distance (distance ~ 0) and self-weight
-                dists_no_self = dists[1:]
-                weights_no_self = W[inds[1:]]
+                # dists_no_self = dists[1:]
+                # weights_no_self = W[inds[1:]]
                 # Accumulate weighs into counts
                 h = np.histogram(dists, bins, weights=W[inds])[0]
                 counts[i, :] = np.cumsum(h)
@@ -523,7 +524,8 @@ def pair_cluster(
     pd.DataFrame
         DataFrame with a row per point with column 'synpase' added to the input points.
     pd.DataFrame
-        DataFrame with 1 row per pair cluster ID for each channel and the minimum distance.
+        DataFrame with 1 row per pair cluster ID for each channel and the minimum
+        distance.
     """
     cols_output = channels + ["distance"]
     if points.empty or not set(channels).issubset(points["C"].unique()):
@@ -706,7 +708,8 @@ def pair_puncta(
     pd.DataFrame
         DataFrame with a row per point with column  added to the input points.
     pd.DataFrame
-        DataFrame with 1 row per pair cluster ID for each channel and the minimum distance.
+        DataFrame with 1 row per pair cluster ID for each channel and the minimum
+        distance.
     """
     cols_output = channels + ["distance"]
     if points.empty or not set(channels).issubset(points["C"].unique()):
@@ -814,7 +817,8 @@ def compute_distances(points: pd.DataFrame) -> pd.DataFrame:
     Returns
     -------
     pd.DataFrame:
-        The input dataframe with the distance to the closest point in each of the other channels.
+        The input dataframe with the distance to the closest point in each of the other
+        channels.
     """
     pos = ["X", "Y", "Z"]
     channels = points["C"].unique()
@@ -1157,7 +1161,7 @@ def global_stats(
 
     Parameters
     ----------
-    points
+    points: pd.DataFrame
     """
     # Precompute the volume of the analysis window for efficiency
     volume_window = compute_union_of_balls_volume(

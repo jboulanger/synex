@@ -18,6 +18,11 @@ uv sync
 uv run --extra cu126 --extra test pytest
 ```
 
+## Usage
+```bash
+uv run 
+```
+
 ## Workflow
 1. Load images with bioio
 1. de-drift z stacks
@@ -60,5 +65,3 @@ $$
 \frac{4}{3}\lambda \pi R^3
 $$
 the probability of observing k points in this ball is then given by the Poisson distribution with mean $\mu=\frac{4}{3}\lambda \pi R^3$.
-
-The probability to observe a pair of point at a distance less than R from two points process is
