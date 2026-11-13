@@ -128,25 +128,16 @@ def plot_points(
     cmap_dict = {n: cmap[k % len(cmap)] for k, (n, _) in enumerate(groups)}
 
     # Set up axes based on the split parameter or provided axes
-    # n_groups = len(groups)
-    # if axes is None:
-    #     if split:
-    #         fig, axes = plt.subplots(1, n_groups, squeeze=False)
-    #         axes = axes[0]  # Flatten 2D array to 1D
-    #     else:
-    #         fig, ax = plt.subplots()
-    #         axes = [ax] * n_groups  # Broadcast single axis
-    # else:
-    #     if not isinstance(axes, dict):
-    #         axes = [axes] * n_groups if not split else [axes]
-    #     if len(axes) < n_groups:
-    #         raise ValueError(
-    #             f"Number of provided axes {len(axes)} does not match number "
-    #             f"of channel groups ({n_groups})."
-    #         )
-    #     fig = axes[0].figure
+    if axes_dict is None:
+        n_groups = len(groups)
+        if split:
+            fig, axes = plt.subplots(1, n_groups, squeeze=False)
+            axes = axes[0]  # Flatten 2D array to 1D
+        else:
+            fig, ax = plt.subplots()
+            axes = [ax] * n_groups  # Broadcast single axis
+        axes_dict = {n: axes[k] for k, (n, _) in enumerate(groups)}
 
-    # axes_dict = {n: axes[k] for k, (n, _) in enumerate(groups)}
     # Unified plotting loop
     for name, pts in groups:
         if name in axes_dict.keys():
@@ -170,7 +161,6 @@ def plot_points(
 
 def plot_drift_correction(data, stabilized, shifts):
     """Plot drift correction."""
-
     plt.figure()
     plt.subplot(311)
     plt.plot(shifts.reset_index()["Z"], shifts["DX [um]"])
@@ -181,10 +171,16 @@ def plot_drift_correction(data, stabilized, shifts):
     n = 500
     a = data[0, 2, :, :n, :n].max(axis=1)
     b = stabilized[0, 2, :, :n, :n].max(axis=1)
-    plt.subplot(312)
+    c = data[0, 2, :, :n, :n].max(axis=2)
+    d = stabilized[0, 2, :, :n, :n].max(axis=2)
+    plt.subplot(323)
     a.plot(add_colorbar=False, cmap="gray")
-    plt.subplot(313)
+    plt.subplot(324)
+    c.plot(add_colorbar=False, cmap="gray")
+    plt.subplot(325)
     b.plot(add_colorbar=False, cmap="gray")
+    plt.subplot(326)
+    c.plot(add_colorbar=False, cmap="gray")
     plt.suptitle("Z drift correction")
     plt.tight_layout()
 

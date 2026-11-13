@@ -1,4 +1,4 @@
-"""PRRT microscopy data analysis."""
+"""ExM synaptic data analysis."""
 
 from .clustering import (
     associate_to_paired_cluster,
@@ -9,7 +9,8 @@ from .clustering import (
     create_synthetic_point_cloud,
     global_stats,
     pair_cluster,
-    pair_puncta,
+    pair_puncta_many_to_many,
+    pair_puncta_one_to_one,
     synapse_stats,
 )
 from .drift import correct_z_drift
@@ -27,7 +28,8 @@ __all__ = [
     "cluster_dbscan",
     "create_synthetic_point_cloud",
     "pair_cluster",
-    "pair_puncta",
+    "pair_puncta_many_to_many",
+    "pair_puncta_one_to_one",
     "global_stats",
     "compute_poisson_pair_pvalue",
     "compute_dbscan_clustering_pvalue",

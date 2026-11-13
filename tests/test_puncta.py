@@ -3,7 +3,7 @@
 import numpy as np
 import xarray as xr
 
-from prrt_clustering.puncta import Gaussian3D
+from synxm.puncta import Gaussian3D
 
 
 def test_gaussian3d_fit_recovers_center_and_shapes():
@@ -37,7 +37,7 @@ def test_detect_puncta_returns_dataframe():
     """Test detect_puncta returns a valid DataFrame on synthetic spot data."""
     import pandas as pd
 
-    from prrt_clustering.puncta import detect_puncta
+    from synxm.puncta import detect_puncta
 
     axis_z = np.linspace(0, 10, 11)
     axis_y = np.linspace(0, 10, 11)
@@ -60,6 +60,6 @@ def test_detect_puncta_returns_dataframe():
 
     df = detect_puncta(da, params)
     assert isinstance(df, pd.DataFrame)
-    assert set(["Z", "Y", "X", "C", "V", "A"]).issubset(df.columns)
+    assert set(["Z", "Y", "X", "C", "mean intensity", "volume"]).issubset(df.columns)
     assert len(df) > 0
     assert set(df["C"].unique()).issubset({0, 1})

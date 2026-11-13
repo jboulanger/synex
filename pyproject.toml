@@ -1,7 +1,7 @@
 [project]
-name = "prrt-clustering"
+name = "synxm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Synaptic marker analysis for expansion microscopy"
 readme = "README.md"
 authors = [{ name = "jboulanger", email = "jerome.boulanger@laposte.net" }]
 requires-python = ">=3.13"
@@ -20,43 +20,11 @@ dependencies = [
 ]
 
 [project.scripts]
-prrt-clustering = "prrt_clustering:main"
+synxm = "synxm.__main__:main"
 
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13.0"]
 build-backend = "uv_build"
-
-
-[project.optional-dependencies]
-cpu = ["torch>=2.9.1", "torchvision>=0.24.0"]
-cu126 = ["torch>=2.9.1", "torchvision>=0.24.0"]
-
-
-[tool.uv]
-package = true
-conflicts = [[{ extra = "cpu" }, { extra = "cu126" }]]
-
-[tool.uv.sources]
-torch = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu126", extra = "cu126" },
-]
-
-torchvision = [
-    { index = "pytorch-cpu", extra = "cpu" },
-    { index = "pytorch-cu126", extra = "cu126" },
-]
-microimage = { path = "../../../microimage" }
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu126"
-url = "https://download.pytorch.org/whl/cu126"
-explicit = true
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "D"]

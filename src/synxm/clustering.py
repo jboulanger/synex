@@ -5,20 +5,14 @@ from itertools import permutations, product
 import numpy as np
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
-
-# from scipy.sparse import coo_matrix
-# from scipy.sparse.csgraph import connected_components
-from scipy.sparse import csr_array
-from scipy.sparse.csgraph import min_weight_full_bipartite_matching
+from scipy.sparse import bmat, csr_array, diags
+from scipy.sparse.csgraph import (
+    connected_components,
+    min_weight_full_bipartite_matching,
+)
 from scipy.spatial import KDTree
 from scipy.stats import poisson
-from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import DBSCAN
-from sklearn.decomposition import PCA
-from sklearn.mixture import GaussianMixture
-from sklearn.neighbors import NearestNeighbors
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import RobustScaler, StandardScaler
 
 
 def create_synthetic_point_cloud(
@@ -91,370 +85,6 @@ def create_synthetic_point_cloud(
     return points, clusters
 
 
-class OrderedGaussianMixture(GaussianMixture):
-    """Gaussian Mixture Model with sorted cluster labels.
-
-    Sorts predicted component labels by the Euclidean norm of their cluster
-    means in ascending order. Label 0 corresponds to the cluster with the
-    smallest mean norm.
-    """
-
-    def fit_predict(self, X, y=None):
-        """Fit model to X and predict sorted cluster labels.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            List of n_features-dimensional data points.
-        y : Ignored
-            Not used, present for API consistency.
-
-        Returns
-        -------
-        ndarray of shape (n_samples,)
-            Component labels sorted by cluster mean norm in ascending order.
-        """
-        labels = super().fit_predict(X, y)
-        # Compute norms of the fitted GMM means_ (or sample means)
-        norms = np.linalg.norm(self.means_, axis=1)
-        order = np.argsort(norms)  # order[0] is the component with smallest norm
-
-        # Remap labels so 0 is smallest norm, 1 is next, etc.
-        rank = np.empty_like(order)
-        rank[order] = np.arange(len(order))
-        return rank[labels]
-
-
-class NNDiffFeatureExtractor(BaseEstimator, TransformerMixin):
-    """Transformer computing square-root differences between sorted neighbor distances.
-
-    Fits a nearest-neighbors index on input coordinates and transforms them
-    into square-root differences of sequential neighbor distances.
-
-    Parameters
-    ----------
-    n_neighbors : int, default=4
-        Number of neighbors to query (including the point itself).
-    metric : str, default="euclidean"
-        Distance metric for nearest neighbor queries.
-    """
-
-    def __init__(self, n_neighbors: int = 4, metric: str = "euclidean"):
-        self.n_neighbors = n_neighbors
-        self.metric = metric
-
-    def fit(self, X, y=None):
-        """Fit the NearestNeighbors estimator on the input coordinates.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training coordinate points.
-        y : Ignored
-            Not used, present for API consistency.
-
-        Returns
-        -------
-        self : NNDiffFeatureExtractor
-            Fitted transformer instance.
-        """
-        self.nn_ = NearestNeighbors(n_neighbors=self.n_neighbors, metric=self.metric)
-        self.nn_.fit(X)
-        return self
-
-    def transform(self, X):
-        """Transform coordinate points into distance difference features.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Query coordinate points.
-
-        Returns
-        -------
-        ndarray of shape (n_samples, n_neighbors - 2)
-            Square root of differences between sequential nearest-neighbor distances.
-        """
-        # kneighbors returns (distances, indices)
-        distances, _ = self.nn_.kneighbors(X)
-        return np.sqrt(np.diff(distances, axis=1))
-
-
-class BesagFeature(BaseEstimator, TransformerMixin):
-    """Transformer computing 3D local Besag's L-function weighted features.
-
-    Uses the 4th column as weight.
-
-    Computes neighbor counts within radial balls and compares them to Complete
-    Spatial Randomness (CSR) in 3D:
-        L_i(r) = ( (3 * N_i(r)) / (4 * pi * lambda) )^(1/3) - r
-    where lambda is the estimated point density across the bounding volume.
-
-    Parameters
-    ----------
-    max_radius : float, default=1.0
-        Maximum radial search distance for neighbor queries.
-    num_radius : int, default=10
-        Number of radial evaluation points linearly spaced in (0, max_radius].
-    metric : str, default="euclidean"
-        Distance metric for nearest neighbor queries.
-    """
-
-    def __init__(
-        self,
-        max_radius: float = 1.0,
-        num_radius: int = 10,
-        metric: str = "euclidean",
-    ):
-        self.max_radius = max_radius
-        self.num_radius = num_radius
-        self.metric = metric
-
-    def fit(self, X, y=None):
-        """Fit the spatial radius index and estimate global point density.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Training coordinate points (Z, Y, X, W) with W a weight.
-        y : Ignored
-            Not used, present for API consistency.
-
-        Returns
-        -------
-        self : CSRFeature
-            Fitted transformer instance.
-        """
-        # Compute spatial nearest neighbors.
-        Xs = np.asarray(X)[:, :3]
-        W = np.asarray(X)[:, -1]
-        self.radii_ = np.linspace(
-            self.max_radius / self.num_radius, self.max_radius, self.num_radius
-        )
-        self.nn_ = NearestNeighbors(radius=self.max_radius, metric=self.metric)
-        self.nn_.fit(Xs)
-
-        # Estimate global density lambda = N / V
-        ranges = np.ptp(Xs, axis=0)
-        volume = float(np.prod(np.maximum(ranges, 1e-6)))
-        self.lambda_ = max(W.sum() / volume, 1e-12)
-        return self
-
-    def transform(self, X):
-        """Transform coordinate points into 3D Besag L-function features.
-
-        Parameters
-        ----------
-        X : array-like of shape (n_samples, n_features)
-            Query coordinate points.
-
-        Returns
-        -------
-        ndarray of shape (n_samples, num_radius)
-            Besag L-function values L_i(r) across radii.
-        """
-        Xs = np.asarray(X)[:, :3]
-        W = np.asarray(X)[:, -1]
-
-        # Query all neighbor distances within max_radius
-        nn_dist, nn_ind = self.nn_.radius_neighbors(
-            Xs, return_distance=True, sort_results=True
-        )
-
-        # Vectorized counting of neighbors within each radius r
-        # (excluding point itself at distance 0)
-        counts = np.empty((len(X), len(self.radii_)), dtype=np.float64)
-        bins = np.concatenate([[0], self.radii_])
-        for i, (dists, inds) in enumerate(zip(nn_dist, nn_ind)):
-            if len(dists) <= 1:
-                counts[i, :] = 0.0
-            else:
-                # Exclude self-distance (distance ~ 0) and self-weight
-                # dists_no_self = dists[1:]
-                # weights_no_self = W[inds[1:]]
-                # Accumulate weighs into counts
-                h = np.histogram(dists, bins, weights=W[inds])[0]
-                counts[i, :] = np.cumsum(h)
-
-        # 3D Besag L-function: (3 * N_i(r) / (4 * pi * lambda))^(1/3) - r
-        # Under CSR, expected value is 0. Clustered points produce L(r) > 0.
-        l_r = np.cbrt((3.0 * counts) / (4.0 * np.pi * self.lambda_)) - self.radii_
-        return l_r
-
-
-def clean_points_nn_gmm(points: pd.DataFrame, n_neighbors=10):
-    """Clean point cloud using nearest neighbors.
-
-    Parameters
-    ----------
-    points: pd.DataFrame
-        DataFrame with columns X, Y, Z, C, intensity
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of points with an added boolean 'noise' column.
-    """
-    clean = []
-    # import matplotlib.pyplot as plt
-
-    pipeline = Pipeline(
-        [
-            ("nn_features", NNDiffFeatureExtractor(n_neighbors)),
-            ("scaler", StandardScaler()),
-            ("pca", PCA(n_components=0.95, random_state=42)),
-            (
-                "gmm",
-                OrderedGaussianMixture(
-                    n_components=2, covariance_type="full", random_state=42
-                ),
-            ),
-        ]
-    )
-
-    for _, p in points.groupby("C"):
-        p = p.copy()
-        X = p[["Z", "Y", "X"]].to_numpy()
-        labels = pipeline.fit_predict(X)
-        p["noise"] = labels == 0
-        clean.append(p)
-        # Visualization
-        # Z = pipeline.named_steps["nn_features"].transform(X)
-        # label_keep = 0
-        # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
-        # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-        # plt.show()
-    return pd.concat(clean)
-
-
-def clean_points_nn_if(points: pd.DataFrame, contamination=0.1):
-    """Clean point cloud using nearest neighbors and IsolationForest.
-
-    Parameters
-    ----------
-    points: pd.DataFrame
-        DataFrame with columns X, Y, Z, C, intensity
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of points with an added boolean 'noise' column.
-    """
-    clean = []
-    # import matplotlib.pyplot as plt
-    from sklearn.ensemble import IsolationForest
-
-    pipeline = Pipeline(
-        [
-            ("nn_features", NNDiffFeatureExtractor(n_neighbors=5)),
-            ("scaler", StandardScaler()),
-            ("pca", PCA(n_components=0.95, random_state=42)),
-            (
-                "isolation_forest",
-                IsolationForest(contamination=contamination),
-            ),
-        ]
-    )
-    # pipeline = IsolationForest(contamination=0.001)
-
-    for _, p in points.groupby("C"):
-        p = p.copy()
-        X = p[["Z", "Y", "X"]].to_numpy()
-        labels = pipeline.fit_predict(X)
-        p["noise"] = labels == 1
-        clean.append(p)
-        # Visualization
-        # Z = pipeline.named_steps["nn_features"].transform(X)
-        # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
-        # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-    # plt.show()
-    return pd.concat(clean)
-
-
-def clean_points_besag_gmm(
-    points: pd.DataFrame, max_radius: float = 1.5, num_radius: int = 11
-):
-    """Clean point cloud using besag features.
-
-    Parameters
-    ----------
-    points: pd.DataFrame
-        DataFrame with columns X, Y, Z, C, intensity
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of points with an added boolean 'noise' column.
-    """
-    clean = []
-
-    pipeline = Pipeline(
-        [
-            ("csr_features", BesagFeature(max_radius, num_radius)),
-            ("scaler", RobustScaler()),
-            # ("pca", PCA(n_components=2, random_state=42)),
-            (
-                "gmm",
-                OrderedGaussianMixture(
-                    n_components=2, covariance_type="full", random_state=42
-                ),
-            ),
-        ]
-    )
-
-    for _, p in points.groupby("C"):
-        X = p[["Z", "Y", "X", "intensity"]].to_numpy()
-        labels = pipeline.fit_predict(X)
-        p["noise"] = labels == 0
-        clean.append(p)
-        # Visualization
-        # Z = pipeline.named_steps["csr_features"].transform(X)
-        # Z = pipeline.named_steps["scaler"].transform(Z)
-        # Z = pipeline.named_steps["pca"].transform(Z)
-        # label_keep = 1
-        # plt.imshow(
-        #     Z, aspect="auto", interpolation="none", extent=(0, 0.5, Z.shape[0], 0)
-        # )
-        # plt.plot(Z[labels == label_keep, 0], Z[labels == label_keep, 1], "g.")
-        # plt.plot(Z[labels != label_keep, 0], Z[labels != label_keep, 1], "r.")
-        # plt.show()
-    return pd.concat(clean)
-
-
-def clean_points_besag(
-    points: pd.DataFrame,
-    max_radius: float = 1.5,
-    num_radius: int = 11,
-    threshold: float = 1,
-):
-    """Clean point cloud using by looking how much.
-
-    Parameters
-    ----------
-    points: pd.DataFrame
-        DataFrame with columns X, Y, Z, C, intensity
-
-    Returns
-    -------
-    pd.DataFrame
-        Copy of points with an added boolean 'noise' column.
-    """
-    clean = []
-
-    pipeline = BesagFeature(max_radius, num_radius)
-
-    for _, p in points.groupby("C", sort=False):
-        X = p[["Z", "Y", "X", "intensity"]].to_numpy()
-        labels = pipeline.fit_transform(X)
-        # import matplotlib.pyplot as plt
-
-        # plt.imshow(labels < threshold)
-        # plt.show()
-        p["noise"] = (labels < threshold).min(axis=1)
-        clean.append(p)
-    return pd.concat(clean)
-
-
 def cluster_dbscan(
     points: pd.DataFrame,
     channels: list[str],
@@ -482,7 +112,10 @@ def cluster_dbscan(
     pd.DataFrame
         cluster centroids
     """
-    print("--")
+    required_columns = set(["X", "Y", "Z", "C"])
+    if not required_columns.issubset(points.columns):
+        raise ValueError("Wrong input columns")
+
     cols = ["X", "Y", "Z", "C", "V", "A", "cluster"]
     if points is None or points.empty:
         return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
@@ -509,7 +142,7 @@ def sample_in_union_of_balls(
     radius: float,
     rng: np.random.Generator,
 ) -> np.ndarray:
-    """Uniformly sample n_samples inside the union of balls.
+    """Uniformly sample points inside the union of balls.
 
     Parameters
     ----------
@@ -577,6 +210,10 @@ def compute_dbscan_clustering_pvalue(
     pd.DataFrame
         Table with columns "C", "number of clusters" and "p-value"
     """
+    required_columns = set(["X", "Y", "Z", "C", cluster_column])
+    if not required_columns.issubset(points.columns):
+        raise ValueError(f"Wrong input columns in points: {points.columns}")
+
     cols = ["C", "number of clusters", "p-value"]
     if points is None or points.empty:
         return pd.DataFrame(columns=cols)
@@ -650,6 +287,10 @@ def pair_cluster(
         - Copy of `points` with `pair_column` added.
         - DataFrame with columns `[ch1, ch2, "distance"]` for each matched pair.
     """
+    required_columns = set(["X", "Y", "Z", "C", cluster_column])
+    if not required_columns.issubset(points.columns):
+        raise ValueError(f"Wrong input columns in points: {points.columns}")
+
     if len(channels) != 2 or channels[0] == channels[1]:
         raise ValueError("`channels` must contain exactly two distinct channel names.")
 
@@ -769,7 +410,9 @@ def associate_to_paired_cluster(
         Copy of `points` with `column_id` updated for reachable target points.
     """
     required_columns = set(["X", "Y", "Z", "C", column_id])
-    assert required_columns.issubset(points.columns)
+    if not required_columns.issubset(points.columns):
+        raise ValueError(f"Wrong input columns in points: {points.columns}")
+
     pos = ["X", "Y", "Z"]
     new_points = points.copy()
 
@@ -782,6 +425,7 @@ def associate_to_paired_cluster(
 
     # Reference points: already assigned to a paired cluster and outside `channels`
     synapse_mask = (new_points[column_id] >= 0) & (~new_points["C"].isin(channels))
+
     # Target points: inside `channels` and not yet assigned
     target_mask = new_points["C"].isin(channels) & (new_points[column_id] < 0)
 
@@ -809,7 +453,245 @@ def associate_to_paired_cluster(
     return new_points
 
 
-def pair_puncta(
+def pair_puncta_many_to_many(
+    points: pd.DataFrame,
+    channels: tuple[str, str] | list[str],
+    distance: float,
+    pair_column: str = "pair_id",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pair all puncta across two channels within `distance` (many-to-many).
+
+    Because a single punctum can belong to multiple pairs, `pair_column` in
+    `new_points` represents the connected-component (synapse group) ID shared
+    by all mutually reachable puncta within `distance` (-1 if unpaired).
+
+    Parameters
+    ----------
+    points : pd.DataFrame
+        Points with X, Y, Z, and C columns.
+    channels : sequence of 2 str
+        Pair of distinct channels [ch1, ch2] to match across.
+    distance : float
+        Maximum distance threshold for valid pairs.
+    pair_column : str, default="pair_id"
+        Name of the added column with connected group IDs (-1 if unpaired).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        - Copy of `points` with `pair_column` added (-1 for unpaired points).
+        - DataFrame with columns `[ch1, ch2, "distance", pair_column]` for every
+          within-threshold pair.
+    """
+    required_columns = {"X", "Y", "Z", "C"}
+    if not required_columns.issubset(points.columns):
+        missing = required_columns - set(points.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if len(channels) != 2 or channels[0] == channels[1]:
+        raise ValueError("`channels` must contain exactly two distinct channel names.")
+
+    ch1, ch2 = channels
+    cols_output = [ch1, ch2, "distance", pair_column]
+
+    new_points = points.copy()
+    new_points[pair_column] = pd.Series(
+        -1, index=new_points.index, dtype=pd.Int64Dtype()
+    )
+
+    if points.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    pts1 = points[points["C"] == ch1]
+    pts2 = points[points["C"] == ch2]
+
+    if pts1.empty or pts2.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    coords1 = pts1[["X", "Y", "Z"]].to_numpy(dtype=float)
+    coords2 = pts2[["X", "Y", "Z"]].to_numpy(dtype=float)
+
+    # Find all pairs within `distance` between ch1 and ch2
+    tree1 = KDTree(coords1)
+    tree2 = KDTree(coords2)
+    neighbors = tree1.query_ball_tree(tree2, r=distance)
+
+    lens = [len(nb) for nb in neighbors]
+    if sum(lens) == 0:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    i_idx = np.repeat(np.arange(len(pts1)), lens)
+    j_idx = np.concatenate(neighbors).astype(int)
+    dists = np.linalg.norm(coords1[i_idx] - coords2[j_idx], axis=1)
+
+    # Build a bipartite adjacency matrix over active puncta to find connected groups
+    active_i, row_pos = np.unique(i_idx, return_inverse=True)
+    active_j, col_pos = np.unique(j_idx, return_inverse=True)
+    row_pos = row_pos.ravel()
+    col_pos = col_pos.ravel()
+
+    n_a, n_b = len(active_i), len(active_j)
+    # Offset ch2 nodes by n_a so all active puncta share a single node index space [0, n_a + n_b)
+    edges_u = np.concatenate([row_pos, n_a + col_pos])
+    edges_v = np.concatenate([n_a + col_pos, row_pos])
+    adj = csr_array(
+        (np.ones(len(edges_u), dtype=np.int8), (edges_u, edges_v)),
+        shape=(n_a + n_b, n_a + n_b),
+    )
+
+    _, labels = connected_components(adj, directed=False)
+    labels_a = labels[:n_a]
+    labels_b = labels[n_a:]
+
+    # Assign connected-component group IDs back to `new_points`
+    new_points.loc[pts1.index[active_i], pair_column] = labels_a
+    new_points.loc[pts2.index[active_j], pair_column] = labels_b
+
+    # Build pairs DataFrame (every edge gets the group ID of its connected component)
+    df = (
+        pd.DataFrame(
+            {
+                ch1: pts1.index[i_idx],
+                ch2: pts2.index[j_idx],
+                "distance": dists,
+                pair_column: pd.Series(labels_a[row_pos], dtype="Int64"),
+            }
+        )
+        .sort_values([pair_column, "distance"], ascending=[True, True])
+        .reset_index(drop=True)
+    )
+
+    return new_points, df[cols_output]
+
+
+def pair_puncta_one_to_one(
+    points: pd.DataFrame,
+    channels: tuple[str, str] | list[str],
+    distance: float,
+    pair_column: str = "pair_id",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pair individual puncta across two channels (C) using 1-to-1 linear assignment.
+
+    Parameters
+    ----------
+    points : pd.DataFrame
+        Points with X, Y, Z, and C columns.
+    channels : sequence of 2 str
+        Pair of distinct channels [ch1, ch2] to match across.
+    distance : float
+        Maximum distance threshold for valid pairs.
+    pair_column : str, default="pair_id"
+        Name of the added column with assigned pair IDs (-1 if unpaired).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        - Copy of `points` with `pair_column` added (-1 for unpaired points).
+        - DataFrame with columns `[ch1, ch2, "distance"]` containing the matched
+            point indices from `points` and their Euclidean distance.
+    """
+    required_columns = {"X", "Y", "Z", "C"}
+    if not required_columns.issubset(points.columns):
+        missing = required_columns - set(points.columns)
+        raise ValueError(f"Missing required columns: {missing}")
+
+    if len(channels) != 2 or channels[0] == channels[1]:
+        raise ValueError("`channels` must contain exactly two distinct channel names.")
+
+    ch1, ch2 = channels
+    cols_output = [ch1, ch2, "distance"]
+
+    new_points = points.copy()
+    new_points[pair_column] = pd.Series(
+        -1, index=new_points.index, dtype=pd.Int64Dtype()
+    )
+
+    if points.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    pts1 = points[points["C"] == ch1]
+    pts2 = points[points["C"] == ch2]
+
+    if pts1.empty or pts2.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    coords1 = pts1[["X", "Y", "Z"]].to_numpy(dtype=float)
+    coords2 = pts2[["X", "Y", "Z"]].to_numpy(dtype=float)
+
+    # Bipartite spatial query between ch1 and ch2 puncta
+    tree1 = KDTree(coords1)
+    tree2 = KDTree(coords2)
+    neighbors = tree1.query_ball_tree(tree2, r=distance)
+
+    lens = [len(nb) for nb in neighbors]
+    if sum(lens) == 0:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    i_idx = np.repeat(np.arange(len(pts1)), lens)
+    j_idx = np.concatenate(neighbors).astype(int)
+    dists = np.linalg.norm(coords1[i_idx] - coords2[j_idx], axis=1)
+
+    # Remap to compact active indices
+    active_i, row_pos = np.unique(i_idx, return_inverse=True)
+    active_j, col_pos = np.unique(j_idx, return_inverse=True)
+    row_pos = row_pos.ravel()
+    col_pos = col_pos.ravel()
+
+    n_a, n_b = len(active_i), len(active_j)
+
+    # Real edges have negative weights so max-cardinality + min-distance is optimal
+    edge_weights = dists - (distance + 1.0)
+    real_edges = csr_array((edge_weights, (row_pos, col_pos)), shape=(n_a, n_b))
+
+    # Augmented (n_a + n_b) x (n_b + n_a) graph with slack diagonals (weight = 1e-9 > 0)
+    # Guarantees a full bipartite matching always exists without dropping valid pairs
+    slack_a = diags(np.full(n_a, 1e-9), format="csr")
+    slack_b = diags(np.full(n_b, 1e-9), format="csr")
+    aug_graph = bmat(
+        [
+            [real_edges, slack_a],
+            [slack_b, real_edges.T],
+        ],
+        format="csr",
+    )
+
+    row_ind, col_ind = min_weight_full_bipartite_matching(aug_graph)
+
+    # Keep only real matches (i < n_a and j < n_b)
+    is_real = (row_ind < n_a) & (col_ind < n_b)
+    real_rows = row_ind[is_real]
+    real_cols = col_ind[is_real]
+
+    if len(real_rows) == 0:
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    matched_dists = np.asarray(real_edges[real_rows, real_cols]).ravel() + (
+        distance + 1.0
+    )
+
+    matched_idx1 = pts1.index[active_i[real_rows]]
+    matched_idx2 = pts2.index[active_j[real_cols]]
+
+    df = (
+        pd.DataFrame(
+            {
+                ch1: matched_idx1,
+                ch2: matched_idx2,
+                "distance": matched_dists,
+            }
+        )
+        .sort_values("distance", ascending=True)
+        .reset_index(drop=True)
+    )
+    df[pair_column] = df.index.astype("Int64")
+
+    new_points.loc[df[ch1], pair_column] = df[pair_column].to_numpy()
+    new_points.loc[df[ch2], pair_column] = df[pair_column].to_numpy()
+
+    return new_points, df[cols_output]
+
+
+def pair_puncta_old(
     points: pd.DataFrame,
     channels: tuple[str, str] | list[str],
     distance: float,
@@ -889,7 +771,12 @@ def pair_puncta(
     edge_weights = dists - (distance + 1.0)
     graph = csr_array((edge_weights, (row_pos, col_pos)), shape=(n_a, n_b))
 
-    row_ind, col_ind = min_weight_full_bipartite_matching(graph)
+    try:
+        row_ind, col_ind = min_weight_full_bipartite_matching(graph)
+    except ValueError as e:
+        print(f"No pair found in pair_puncta with distance {distance}")
+        print(e)
+        return new_points, pd.DataFrame(columns=cols_output)
 
     # Recover original distances from matched edges
     matched_dists = np.asarray(graph[row_ind, col_ind]).ravel() + (distance + 1.0)

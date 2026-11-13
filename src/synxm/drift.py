@@ -11,6 +11,8 @@ from scipy import ndimage as ndi
 import numpy as np
 import scipy.ndimage as ndi
 
+import dask.array as da
+
 
 def _cpd_e_step(
     ref_lm: np.ndarray,
@@ -201,7 +203,104 @@ def estimate_translation_lk_cpd(
     return t
 
 
-def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarray:
+def estimate_translation(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    scale: float = 1.5,
+    max_iters: int = 20,
+    tol: float = 1e-4,
+) -> np.ndarray:
+    """Estimate the global translation between two images.
+
+    Uses an iterative Inverse-Compositional Lucas-Kanade optical flow method.
+
+    Parameters
+    ----------
+    reference : np.ndarray
+        The reference (template) image (2D).
+    moving : np.ndarray
+        The moving image to align with the reference, same shape as reference.
+    scale : float, default=1.0
+        Standard deviation for Gaussian smoothing before gradient computation.
+    max_iters : int, default=20
+        Maximum number of Gauss-Newton iterations.
+    tol : float, default=1e-4
+        Convergence threshold on the update step norm (in pixels).
+
+    Returns
+    -------
+    np.ndarray
+        A 1D translation vector [dy, dx] in pixels that registers the moving image.
+    """
+    if reference.shape != moving.shape:
+        raise ValueError("Reference and moving images must have the same shape.")
+
+    # Ensure floating-point precision
+    ref = np.asarray(reference, dtype=np.float64)
+    mov = np.asarray(moving, dtype=np.float64)
+
+    # Filtering
+    if scale > 0:
+        ref = ndi.gaussian_filter(ref, scale)
+        mov = ndi.gaussian_filter(mov, scale)
+
+    # Spatial gradients on reference (constant across iterations)
+    I1, I2 = np.gradient(ref)
+
+    # Precompute structure tensor components on the full image as fallback
+    # (Recomputed over valid interior pixels inside the loop when shifted)
+    translation = np.zeros(2, dtype=np.float64)
+
+    for _ in range(max_iters):
+        # Warp moving image toward reference using current estimate
+        # Note: shift=-translation samples moving at (y + dy, x + dx)
+        mov_warped = ndi.shift(mov, shift=-translation, order=1, mode="nearest")
+
+        # Mask out border pixels pulled in from outside the image bounds
+        valid = np.ones_like(ref, dtype=bool)
+        dy_pad = int(np.ceil(abs(translation[0])))
+        dx_pad = int(np.ceil(abs(translation[1])))
+
+        if dy_pad > 0:
+            valid[:dy_pad, :] = False
+            valid[-dy_pad:, :] = False
+        if dx_pad > 0:
+            valid[:, :dx_pad] = False
+            valid[:, -dx_pad:] = False
+
+        # Stop if shift exceeds image dimensions
+        if not np.any(valid):
+            break
+
+        # Temporal gradient on valid overlapping region
+        I0 = mov_warped[valid] - ref[valid]
+        I1_v = I1[valid]
+        I2_v = I2[valid]
+
+        # Structure tensor components (mean over valid pixels)
+        a = np.square(I1_v).mean()
+        b = (I1_v * I2_v).mean()
+        c = np.square(I2_v).mean()
+        d = -(I1_v * I0).mean()
+        e = -(I2_v * I0).mean()
+
+        # Construct system matrix and vector
+        A = np.array([[a, b], [b, c]], dtype=np.float64)
+        B = np.array([d, e], dtype=np.float64)
+
+        # Solve for incremental update
+        delta, _, _, _ = np.linalg.lstsq(A, B, rcond=None)
+        translation += delta
+
+        if np.linalg.norm(delta) < tol:
+            break
+
+    return translation
+
+
+def estimate_translation_old(
+    reference: np.ndarray, moving: np.ndarray, scale: float = 1
+) -> np.ndarray:
     """Estimate the global translation between two images.
 
     Uses Lucas-Kanade optical flow method.
@@ -226,8 +325,8 @@ def estimate_translation(reference: np.ndarray, moving: np.ndarray) -> np.ndarra
     mov = np.array(moving).astype(np.float64, copy=False)
 
     # Filtering
-    ref = ndi.gaussian_filter(ref, 1)
-    mov = ndi.gaussian_filter(mov, 1)
+    ref = ndi.gaussian_filter(ref, scale)
+    mov = ndi.gaussian_filter(mov, scale)
 
     # Spatial gradients
     I1, I2 = np.gradient(ref)
@@ -278,8 +377,14 @@ def correct_z_drift(data: xr.DataArray) -> tuple[pd.DataFrame, xr.DataArray]:
             }
         )
         reference = data.sel(T=t, Z=z0).mean("C").data
+        if isinstance(reference, da.Array):
+            # reference.compute_chunk_sizes()
+            reference = reference.compute()
         for z in data["Z"][1:]:
             moving = data.sel(T=t, Z=z).mean("C").data
+            if isinstance(moving, da.Array):
+                # moving.compute_chunk_sizes()
+                moving = moving.compute()
             v = estimate_translation(reference, moving)
             shifts.append({"T": t.item(), "Z": z.item(), "VY": v[0], "VX": v[1]})
             reference, moving = moving, reference

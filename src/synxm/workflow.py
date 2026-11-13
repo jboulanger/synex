@@ -1,4 +1,4 @@
-"""Command-line interface for batch processing in prrt_clustering."""
+"""SynXM image-processing workflow."""
 
 from pathlib import Path
 
@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import yaml
 from bioio import BioImage
 
-import prrt_clustering as pclst
+import synxm as synxm
 
 
 def process(data_path: Path, output_folder: Path, parameters: dict) -> None:
@@ -18,33 +18,45 @@ def process(data_path: Path, output_folder: Path, parameters: dict) -> None:
     # Save parameters
     with open(output_folder / f"{name}_parameters.yaml", "w") as f:
         yaml.safe_dump(parameters, f)
+
     # Load data
     image = BioImage(data_path)
     data = image.xarray_dask_data.assign_coords({"C": parameters["channels"]})
+
     # Correct drift using subpixelic LK
-    shifts, stabilized = pclst.correct_z_drift(data)
-    pclst.plot_drift_correction(data, stabilized, shifts)
-    plt.savefig(output_folder / "drift.jpg")
-    shifts.to_csv(output_folder / "drift.csv")
+    shifts, stabilized = synxm.correct_z_drift(data)
+
     # Detect puncta in all channels
-    points = pclst.detect_puncta(stabilized[0], parameters["detection"])
+    points = synxm.detect_puncta(stabilized[0], parameters["detection"])
+
     # Cluster puncta using DBSCAN
-    points, clusters = pclst.cluster_dbscan(points, **parameters["dbscan"])
+    points, clusters = synxm.cluster_dbscan(points, **parameters["dbscan"])
+
     # Compute a p-values for the number of observed clusters
-    pval_clusters = pclst.compute_dbscan_clustering_pvalue(
+    pval_clusters = synxm.compute_dbscan_clustering_pvalue(
         points, **parameters["dbscan"]
     )
-    pval_clusters.to_csv(output_folder / "dbscan_pvalues.csv")
-    # Pair clusters in target channels
-    points, synapses = pclst.pair_cluster(points, **parameters["synapse"])
-    # Pair puncta in target channels
-    points, pairs = pclst.pair_puncta(points, **parameters["pairs"])
-    #
-    points = pclst.associate_to_paired_cluster(points, **parameters["synapse"])
-    points = pclst.compute_distances(points)
-    g_stats = pclst.global_stats(points, **parameters["synapse"])
-    s_stats = pclst.synapse_stats(points)
 
+    # Pair clusters in target channels
+    points, synapses = synxm.pair_cluster(points, **parameters["synapse"])
+
+    # Pair puncta in target channels
+    points, pairs = synxm.pair_puncta_many_to_many(points, **parameters["pairs"])
+
+    # Associate puncta to synapse
+    points = synxm.associate_to_paired_cluster(points, **parameters["synapse"])
+
+    # Compute nearest cross channel pair-wise distances
+    points = synxm.compute_distances(points)
+
+    # Compute statistics for the image
+    g_stats = synxm.global_stats(points, **parameters["synapse"])
+
+    # Compute statistics per synapse
+    s_stats = synxm.synapse_stats(points)
+
+    # Save results
+    pval_clusters.to_csv(output_folder / "dbscan_pvalues.csv")
     s_stats.to_csv(output_folder / f"{name}_s_stats.csv")
     points.to_csv(output_folder / f"{name}_points.csv")
     synapses.to_csv(output_folder / f"{name}_synapses.csv")
@@ -52,3 +64,7 @@ def process(data_path: Path, output_folder: Path, parameters: dict) -> None:
     pairs.to_csv(output_folder / f"{name}_pairs.csv")
     with open(output_folder / f"{name}_g_stats.yaml", "w") as f:
         yaml.safe_dump(g_stats, f)
+
+    synxm.plot_drift_correction(data, stabilized, shifts)
+    plt.savefig(output_folder / f"{name}_drift.jpg")
+    shifts.to_csv(output_folder / f"{name}_drift.csv")

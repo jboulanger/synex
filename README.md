@@ -1,4 +1,11 @@
-# Clustering of pre-post synaptic puncta imaged in expanded brain slide imaged in confocal microscopy.
+# SynXM
+
+Synaptic marker analysis for expansion microscopy (ExM).
+
+## Overview
+
+Analyze pre- and postsynaptic puncta in 3D, four-channel confocal images, including
+drift correction, puncta detection, spatial clustering, and marker association.
 
 Data
 Location: /pandora/Greger_group/Xinyao/PRRT Revision/PRRTm750 A1rb647 PSDck555 RIMgp488
@@ -9,8 +16,8 @@ Images show pre-post synaptic clusters of fluorescently tagged proteins among a 
 
 ## Installation
 ```bash
-git clone
-cd prrt_clustering
+git clone <repository-url> synxm
+cd synxm
 uv sync
 ```
 ## Testing 
@@ -20,7 +27,7 @@ uv run --extra cu126 --extra test pytest
 
 ## Usage
 ```bash
-uv run 
+uv run synxm image.czi output_directory
 ```
 
 ## Workflow

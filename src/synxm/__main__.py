@@ -1,13 +1,11 @@
-"""Command-line interface for batch processing in prrt_clustering."""
+"""Command-line interface for SynXM batch processing."""
 
 import argparse
 from pathlib import Path
 
-import matplotlib.pyplot as plt
-import pandas as pd
 import yaml
-from bioio import BioImage
-import prrt_clustering as pclst
+
+from .workflow import process
 
 
 def load_parameters(path: Path | None) -> dict:
@@ -33,7 +31,7 @@ def load_parameters(path: Path | None) -> dict:
 def main() -> None:
     """Run CLI parsing and processing."""
     parser = argparse.ArgumentParser(
-        description="Process 3D multi-channel microscopy image for PRRT clustering."
+        description="Analyze synaptic markers in 3D expansion microscopy images."
     )
     parser.add_argument("data", type=Path, help="Path to input image file (e.g. .czi).")
     parser.add_argument("output", type=Path, help="Output directory for results.")

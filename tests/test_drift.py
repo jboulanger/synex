@@ -3,7 +3,7 @@
 import numpy as np
 import xarray as xr
 
-from prrt_clustering import correct_z_drift
+from synxm import correct_z_drift
 
 
 def test_correct_z_drift():
