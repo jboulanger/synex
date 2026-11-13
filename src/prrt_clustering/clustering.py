@@ -4,9 +4,12 @@ from itertools import permutations, product
 
 import numpy as np
 import pandas as pd
+from scipy.optimize import linear_sum_assignment
 
 # from scipy.sparse import coo_matrix
 # from scipy.sparse.csgraph import connected_components
+from scipy.sparse import csr_array
+from scipy.sparse.csgraph import min_weight_full_bipartite_matching
 from scipy.spatial import KDTree
 from scipy.stats import poisson
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -54,7 +57,7 @@ def create_synthetic_point_cloud(
     # initial clusters positions
     low, high = [0, 0, 0, 0.5, 10], [D, H, W, 1, 50]
     clst = np.random.uniform(low=low, high=high, size=(N, 5))
-
+    columns = ["Z", "Y", "X", "mean intensity", "volume"]
     points = pd.concat(
         [
             pd.DataFrame(
@@ -73,7 +76,7 @@ def create_synthetic_point_cloud(
                         ),
                     ]
                 ),
-                columns=["Z", "Y", "X", "V", "A"],
+                columns=columns,
             )
             .assign(C=f"CH-{channel}")
             .assign(noise=np.arange(N * K + M) > N * K)
@@ -82,7 +85,7 @@ def create_synthetic_point_cloud(
     )
     clusters = pd.DataFrame(
         clst,
-        columns=["Z", "Y", "X", "V", "A"],
+        columns=columns,
     ).assign(C="cluster")
 
     return points, clusters
@@ -454,6 +457,7 @@ def clean_points_besag(
 
 def cluster_dbscan(
     points: pd.DataFrame,
+    channels: list[str],
     eps: float = 2.0,
     min_samples: int = 5,
     cluster_column: str = "cluster_id",
@@ -464,6 +468,8 @@ def cluster_dbscan(
     ----------
     points: pd.DataFrame
         DataFrame with columns: X, Y, Z, C and intensity
+    channels: list[str]
+        List of channels to use
     eps: float, optional
     min_samples: int , optional
     cluster_column:str, optional
@@ -476,22 +482,18 @@ def cluster_dbscan(
     pd.DataFrame
         cluster centroids
     """
+    print("--")
     cols = ["X", "Y", "Z", "C", "V", "A", "cluster"]
     if points is None or points.empty:
         return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
 
     model = DBSCAN(eps=eps, min_samples=min_samples)
-    new_points = []
-
-    for _, p in points.groupby("C"):
-        X = p[["Z", "Y", "X"]].to_numpy()
-        p[cluster_column] = model.fit_predict(X)
-        new_points.append(p)
-
-    if not new_points:
-        return pd.DataFrame(columns=cols), pd.DataFrame(columns=cols)
-
-    new_points = pd.concat(new_points)
+    new_points = points.copy()
+    new_points[cluster_column] = -1
+    for C, p in points.groupby("C"):
+        if C in channels:
+            X = p[["Z", "Y", "X"]].to_numpy()
+            new_points.loc[p.index, cluster_column] = model.fit_predict(X)
 
     # Compute cluster centroids
     clusters = new_points.groupby(["C", cluster_column]).mean()
@@ -501,307 +503,415 @@ def cluster_dbscan(
     return new_points, clusters
 
 
-def pair_cluster(
+def sample_in_union_of_balls(
+    coords: np.ndarray,
+    n_samples: int,
+    radius: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Uniformly sample n_samples inside the union of balls.
+
+    Parameters
+    ----------
+    coords: np.ndarray
+    n_samples: int
+    radius: float
+    rng: np.random.Generator
+
+    Returns
+    -------
+    np.ndarray:
+        List of random coordinates in the domain.
+    """
+    tree = KDTree(coords)
+    low = np.min(coords, axis=0)
+    high = np.max(coords, axis=0)
+
+    accepted = []
+    n_collected = 0
+    # Batch size scaled up to account for rejection rate
+    batch_size = max(n_samples * 2, 1000)
+
+    while n_collected < n_samples:
+        candidates = rng.uniform(low, high, size=(batch_size, 3))
+        dists, _ = tree.query(candidates, k=1, workers=-1)
+        valid = candidates[dists <= radius]
+        if len(valid) > 0:
+            accepted.append(valid)
+            n_collected += len(valid)
+
+    return np.vstack(accepted)[:n_samples]
+
+
+def compute_dbscan_clustering_pvalue(
     points: pd.DataFrame,
     channels: list[str],
-    distance: float,
+    eps: float = 2.0,
+    min_samples: int = 5,
     cluster_column: str = "cluster_id",
-    pair_column: str = "synapse_id",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Pair clustered points across selected channels (C).
+    n_tests: int = 1000,
+    radius: float = 5,
+    seed: int | None = None,
+) -> pd.DataFrame:
+    """Test statistical significance of DBSCAN cluster counts.
 
     Parameters
     ----------
     points: pd.DataFrame
-        Points with X, Y, Z, C, cluster
+        DataFrame with columns: X, Y, Z, C and cluster_column
     channels: list[str]
-        List of channels used to find clusters and pairs of clusters
-    distance: float
-        Distance threshold for the pairs
+        List of channels to use
+    eps: float, optional
+        Maximum distance between points in the cluster.
+    min_samples: int, optional
+        Minimum of samples per cluster
+    cluster_column: str, optional
+        cluster_id column name
+    n_tests: int, optional
+        Number of tests
+    radius: float, optional
+        Radius used to estimate the support of the point process.
 
     Returns
     -------
     pd.DataFrame
-        DataFrame with a row per point with column 'synpase' added to the input points.
-    pd.DataFrame
-        DataFrame with 1 row per pair cluster ID for each channel and the minimum
-        distance.
+        Table with columns "C", "number of clusters" and "p-value"
     """
-    cols_output = channels + ["distance"]
-    if points.empty or not set(channels).issubset(points["C"].unique()):
-        return points, pd.DataFrame(columns=cols_output)
+    cols = ["C", "number of clusters", "p-value"]
+    if points is None or points.empty:
+        return pd.DataFrame(columns=cols)
 
-    # Filter points belonging to valid clusters and requested channels
-    mask = (points[cluster_column] >= 0) & (points["C"].isin(channels))
-    filtered = points[mask]
+    rng = np.random.default_rng(seed)
+    model = DBSCAN(eps=eps, min_samples=min_samples)
+    Xref = points[["Z", "Y", "X"]].to_numpy()
 
-    if filtered.empty:
-        return points, pd.DataFrame(columns=cols_output)
+    pvalues = []
+    for C, p in points.groupby("C"):
+        if C in channels:
+            X = p[["Z", "Y", "X"]].to_numpy()
+            n_points = len(X)
 
-    # Extract coordinates, channels, and cluster IDs as NumPy arrays
-    coords = filtered[["X", "Y", "Z"]].to_numpy()
-    chs = filtered["C"].to_numpy()
-    ids = filtered[cluster_column].to_numpy()
+            # Observed number of non-noise clusters
+            clid = p[cluster_column].to_numpy()
+            n_obs_clusters = len(np.unique(clid[clid >= 0]))
 
-    # Build the KD tree and query neighbors
-    tree = KDTree(coords)
-    neighbors = tree.query_ball_point(coords, r=distance)
+            # Bounding box (replace with true acquisition bounds if known)
+            low, high = np.min(X, axis=0), np.max(X, axis=0)
 
-    lens = [len(nb) for nb in neighbors]
-    total_neighbors = sum(lens)
-    if total_neighbors == 0:
-        return points, pd.DataFrame(columns=cols_output)
+            sim_clusters = np.zeros(n_tests, dtype=int)
+            for k in range(n_tests):
+                X_sim = rng.uniform(low, high, size=(n_points, 3))
+                X_sim = sample_in_union_of_balls(Xref, n_points, radius, rng)
+                lbl = model.fit_predict(X_sim)
+                sim_clusters[k] = len(np.unique(lbl[lbl >= 0]))
 
-    i_indices = np.repeat(np.arange(len(neighbors)), lens)
-    j_indices = np.concatenate(neighbors)
+            # One-tailed empirical p-value: P(N_sim >= N_obs)
+            p_val = (1 + np.sum(sim_clusters >= n_obs_clusters)) / (n_tests + 1)
+            pvalues.append(
+                {
+                    "C": C,
+                    "number of clusters": n_obs_clusters,
+                    "p-value": p_val,
+                }
+            )
 
-    # Filter out self-pairs and same-channel pairs
-    valid_mask = (i_indices != j_indices) & (chs[i_indices] != chs[j_indices])
-    if not np.any(valid_mask):
-        return points, pd.DataFrame(columns=cols_output)
+    return pd.DataFrame.from_records(pvalues, columns=cols)
 
-    i_valid = i_indices[valid_mask]
-    j_valid = j_indices[valid_mask]
 
-    # Compute exact Euclidean distances vectorially
-    dists = np.linalg.norm(coords[i_valid] - coords[j_valid], axis=1)
+def pair_cluster(
+    points: pd.DataFrame,
+    channels: tuple[str, str] | list[str],
+    distance: float,
+    cluster_column: str = "cluster_id",
+    pair_column: str = "synapse_id",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pair clustered points between two channels (C) using optimal 1-to-1 matching.
 
-    # Build a temporary link DataFrame for vectorized grouping
-    link_df = pd.DataFrame(
-        {
-            "ch1": chs[i_valid],
-            "id1": ids[i_valid],
-            "ch2": chs[j_valid],
-            "id2": ids[j_valid],
-            "dist": dists,
-        }
+    - Clusters are identified by `cluster_column` (value >= 0).
+    - Distance between clusters is the minimum Euclidean distance between their points.
+    - Matches clusters 1-to-1 via the Hungarian algorithm (`linear_sum_assignment`).
+
+    Parameters
+    ----------
+    points : pd.DataFrame
+        Points with X, Y, Z, C, and `cluster_column`.
+    channels : sequence of 2 str
+        Pair of channels [ch1, ch2] to match across.
+    distance : float
+        Maximum distance threshold for valid pairs.
+    cluster_column : str, default="cluster_id"
+        Column containing cluster IDs.
+    pair_column : str, default="synapse_id"
+        Output column name for assigned pair IDs (-1 if unpaired).
+
+    Returns
+    -------
+    tuple[pd.DataFrame, pd.DataFrame]
+        - Copy of `points` with `pair_column` added.
+        - DataFrame with columns `[ch1, ch2, "distance"]` for each matched pair.
+    """
+    if len(channels) != 2 or channels[0] == channels[1]:
+        raise ValueError("`channels` must contain exactly two distinct channel names.")
+
+    ch1, ch2 = channels
+    cols_output = [ch1, ch2, "distance"]
+
+    new_points = points.copy()
+    new_points[pair_column] = pd.Series(
+        -1, index=new_points.index, dtype=pd.Int64Dtype()
     )
 
-    # Vectorized canonicalization to ensure undirected uniqueness (A-B matches B-A)
-    key1 = link_df["ch1"].astype(str) + ":" + link_df["id1"].astype(str)
-    key2 = link_df["ch2"].astype(str) + ":" + link_df["id2"].astype(str)
-    swap = key1 > key2
+    if points.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    ch1_fin = np.where(swap, link_df["ch2"], link_df["ch1"])
-    id1_fin = np.where(swap, link_df["id2"], link_df["id1"])
-    ch2_fin = np.where(swap, link_df["ch1"], link_df["ch2"])
-    id2_fin = np.where(swap, link_df["id1"], link_df["id2"])
+    # Filter valid clustered points separately for each channel
+    valid_cluster = points[cluster_column] >= 0
+    pts1 = points[valid_cluster & (points["C"] == ch1)]
+    pts2 = points[valid_cluster & (points["C"] == ch2)]
 
-    link_df["ch1"] = ch1_fin
-    link_df["id1"] = id1_fin
-    link_df["ch2"] = ch2_fin
-    link_df["id2"] = id2_fin
+    if pts1.empty or pts2.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    # Group by unique cluster pairs to find the global minimum distance
-    grouped = link_df.groupby(["ch1", "id1", "ch2", "id2"], as_index=False)[
-        "dist"
-    ].min()
+    coords1 = pts1[["X", "Y", "Z"]].to_numpy()
+    coords2 = pts2[["X", "Y", "Z"]].to_numpy()
+    ids1 = pts1[cluster_column].to_numpy()
+    ids2 = pts2[cluster_column].to_numpy()
 
-    # Build final records using only unique cluster pairs
-    records = [
-        {row.ch1: row.id1, row.ch2: row.id2, "distance": row.dist}
-        for row in grouped.itertuples(index=False)
-    ]
+    # Bipartite spatial query: only searches pairs between ch1 and ch2
+    tree1 = KDTree(coords1)
+    tree2 = KDTree(coords2)
+    neighbors = tree1.query_ball_tree(tree2, r=distance)
 
-    df = pd.DataFrame.from_records(records)
+    lens = [len(nb) for nb in neighbors]
+    if sum(lens) == 0:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    # Ensure all requested channels are present as columns, plus 'distance'
-    for ch in channels:
-        if ch not in df.columns:
-            df[ch] = np.nan
+    i_idx = np.repeat(np.arange(len(pts1)), lens)
+    j_idx = np.concatenate([np.array(n, dtype=np.uint64) for n in neighbors])
+    dists = np.linalg.norm(coords1[i_idx] - coords2[j_idx], axis=1)
 
-    # Add a new columns synapse to the original dataframe
-    new_points = points.copy()
-    for syn_id, s in df.reset_index(drop=True).iterrows():
-        for ch in channels:
-            mask = (filtered["C"] == ch) & (
-                filtered[cluster_column].astype(int) == int(s[ch])
-            )
-            new_points.loc[filtered.index[mask], pair_column] = int(
-                np.asarray(syn_id).item()
-            )
+    # Minimum distance between every candidate (id1, id2) cluster pair
+    grouped = (
+        pd.DataFrame({"id1": ids1[i_idx], "id2": ids2[j_idx], "dist": dists})
+        .groupby(["id1", "id2"], as_index=False)["dist"]
+        .min()
+    )
+
+    # Build cost matrix for Hungarian matching
+    u_ids1 = np.sort(grouped["id1"].unique())
+    u_ids2 = np.sort(grouped["id2"].unique())
+    map1 = {cid: i for i, cid in enumerate(u_ids1)}
+    map2 = {cid: j for j, cid in enumerate(u_ids2)}
+
+    # Finite penalty strictly larger than any valid sum of distances
+    penalty = (grouped["dist"].max() + 1.0) * max(len(u_ids1), len(u_ids2)) + 1.0
+    cost_matrix = np.full((len(u_ids1), len(u_ids2)), penalty, dtype=float)
+
+    cost_matrix[grouped["id1"].map(map1), grouped["id2"].map(map2)] = grouped["dist"]
+
+    row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    matched_costs = cost_matrix[row_ind, col_ind]
+    valid = matched_costs <= distance
+
+    if not np.any(valid):
+        return new_points, pd.DataFrame(columns=cols_output)
+
+    df = (
+        pd.DataFrame(
+            {
+                ch1: u_ids1[row_ind[valid]],
+                ch2: u_ids2[col_ind[valid]],
+                "distance": matched_costs[valid],
+            }
+        )
+        .sort_values("distance", ascending=True)
+        .reset_index(drop=True)
+    )
+    df[pair_column] = df.index.astype("Int64")
+
+    # Map synapse IDs back to pts1 and pts2 directly
+    for ch, pts_ch in ((ch1, pts1), (ch2, pts2)):
+        id_to_syn = df.set_index(ch)[pair_column]
+        mapped_syn = pts_ch[cluster_column].map(id_to_syn)
+        matched_mask = mapped_syn.notna()
+        new_points.loc[pts_ch.index[matched_mask], pair_column] = mapped_syn[
+            matched_mask
+        ].astype("Int64")
 
     return new_points, df[cols_output]
 
 
 def associate_to_paired_cluster(
-    points: pd.DataFrame, distance: float = 1, column_id: str = "synapse_id"
+    points: pd.DataFrame,
+    channels: list[str],
+    distance: float = 1.0,
+    column_id: str = "synapse_id",
 ) -> pd.DataFrame:
-    """Associate points to closest paired clusters.
+    """Associate points in `channels` to the closest paired cluster (`column_id >= 0`).
 
-    The points dataframe has the columns X, Y, Z, pair_cluster. For each row of points,
-    assigns the 'pair_column' to the closest the 'pair_column' value of the row within
-    max_distance.
+    Each unassigned point in `channels` is matched (many-to-one) to the nearest
+    point belonging to an existing paired cluster within `distance`.
 
     Parameters
     ----------
-    points: pd.DataFrame
-        Points with X, Y, Z, (and pair_column if it exists)
-    distance: float, optional
-        Maximum distance for association
-    pair_column: str, optional
-        The name of the column to use (default "synapse_id")
+    points : pd.DataFrame
+        Points with X, Y, Z, C, and `column_id`.
+    channels : list[str]
+        Target channel(s) whose unassigned points should be associated to paired clusters.
+    distance : float, default=1.0
+        Maximum Euclidean distance threshold for association.
+    column_id : str, default="synapse_id"
+        Name of the column storing paired cluster / synapse IDs (-1 if unassigned).
 
     Returns
     -------
     pd.DataFrame
-        With the 'pair_column' computed for each reachable point.
+        Copy of `points` with `column_id` updated for reachable target points.
     """
+    required_columns = set(["X", "Y", "Z", "C", column_id])
+    assert required_columns.issubset(points.columns)
     pos = ["X", "Y", "Z"]
     new_points = points.copy()
 
-    # Ensure the pair_column exists in the dataframe
     if column_id not in new_points.columns:
         new_points[column_id] = -1
-
-    # Filter synapse points (synapse >= 0)
-    synapse_mask = new_points[column_id] >= 0
-    synapse_points = new_points[synapse_mask]
-
-    if synapse_points.empty or new_points.empty:
         return new_points
 
-    # Extract coordinates
-    syn_coords = synapse_points[pos].to_numpy()
-    all_coords = new_points[pos].to_numpy()
+    if new_points.empty or not channels:
+        return new_points
 
-    # Build KD-tree from synapse-labeled points
+    # Reference points: already assigned to a paired cluster and outside `channels`
+    synapse_mask = (new_points[column_id] >= 0) & (~new_points["C"].isin(channels))
+    # Target points: inside `channels` and not yet assigned
+    target_mask = new_points["C"].isin(channels) & (new_points[column_id] < 0)
+
+    synapse_points = new_points[synapse_mask]
+    target_points = new_points[target_mask]
+
+    if synapse_points.empty or target_points.empty:
+        return new_points
+
+    syn_coords = synapse_points[pos].to_numpy(dtype=float)
+    target_coords = target_points[pos].to_numpy(dtype=float)
+
+    # Query only target points against reference synapse points within `distance`
     tree = KDTree(syn_coords)
+    distances, indices = tree.query(target_coords, k=1, distance_upper_bound=distance)
 
-    # Query the closest synapse for every point (k=1)
-    distances, indices = tree.query(all_coords, k=1)
+    # `tree.query` returns `inf` (and index == len(syn_coords)) when no neighbor is within `distance`
+    valid = np.isfinite(distances)
+    if not np.any(valid):
+        return new_points
 
-    # Filter points within max_distance threshold
-    valid_mask = np.logical_and(distances <= distance, np.logical_not(synapse_mask))
-
-    # Get the actual synapse IDs corresponding to the nearest tree indices
     synapse_ids = synapse_points[column_id].to_numpy()
-    closest_synapse_ids = synapse_ids[indices]
-
-    # Assign the closest synapse ID to valid points
-    new_points.loc[valid_mask, column_id] = closest_synapse_ids[valid_mask]
+    new_points.loc[target_points.index[valid], column_id] = synapse_ids[indices[valid]]
 
     return new_points
 
 
 def pair_puncta(
     points: pd.DataFrame,
-    channels: list[str],
+    channels: tuple[str, str] | list[str],
     distance: float,
     pair_column: str = "pair_id",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Pair points across selected channels (C).
+    """Pair individual puncta across two channels (C) using 1-to-1 linear assignment.
 
     Parameters
     ----------
-    points: pd.DataFrame
-        Points with X, Y, Z, C, cluster
-    channels: list[str]
-        List of channels used to find clusters and pairs of clusters
-    distance: float
-        Distance threshold for the pairs
-    pair_column: str
-        Name of the added column with pair id
+    points : pd.DataFrame
+        Points with X, Y, Z, and C columns.
+    channels : sequence of 2 str
+        Pair of distinct channels [ch1, ch2] to match across.
+    distance : float
+        Maximum distance threshold for valid pairs.
+    pair_column : str, default="pair_id"
+        Name of the added column with assigned pair IDs (-1 if unpaired).
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with a row per point with column  added to the input points.
-    pd.DataFrame
-        DataFrame with 1 row per pair cluster ID for each channel and the minimum
-        distance.
+    tuple[pd.DataFrame, pd.DataFrame]
+        - Copy of `points` with `pair_column` added (-1 for unpaired points).
+        - DataFrame with columns `[ch1, ch2, "distance"]` containing the matched
+            point indices from `points` and their Euclidean distance.
     """
-    cols_output = channels + ["distance"]
-    if points.empty or not set(channels).issubset(points["C"].unique()):
-        return points, pd.DataFrame(columns=cols_output)
+    required_columns = set(["X", "Y", "Z", "C"])
+    assert required_columns.issubset(points.columns)
 
-    # Filter points belonging to valid clusters and requested channels
-    mask = points["C"].isin(channels)
-    filtered = points[mask]
+    if len(channels) != 2 or channels[0] == channels[1]:
+        raise ValueError("`channels` must contain exactly two distinct channel names.")
 
-    if filtered.empty:
-        return points, pd.DataFrame(columns=cols_output)
+    ch1, ch2 = channels
+    cols_output = [ch1, ch2, "distance"]
 
-    # Extract coordinates, channels, and IDs as NumPy arrays
-    coords = filtered[["X", "Y", "Z"]].to_numpy()
-    chs = filtered["C"].to_numpy()
-    ids = filtered.index.to_numpy()
-
-    # Build the KD tree and query neighbors
-    tree = KDTree(coords)
-    neighbors = tree.query_ball_point(coords, r=distance)
-
-    lens = [len(nb) for nb in neighbors]
-    total_neighbors = sum(lens)
-    if total_neighbors == 0:
-        return points, pd.DataFrame(columns=cols_output)
-
-    i_indices = np.repeat(np.arange(len(neighbors)), lens)
-    j_indices = np.concatenate(neighbors)
-
-    # Filter out self-pairs and same-channel pairs
-    valid_mask = (i_indices != j_indices) & (chs[i_indices] != chs[j_indices])
-    if not np.any(valid_mask):
-        return points, pd.DataFrame(columns=cols_output)
-
-    i_valid = i_indices[valid_mask]
-    j_valid = j_indices[valid_mask]
-
-    # Compute exact Euclidean distances vectorially
-    dists = np.linalg.norm(coords[i_valid] - coords[j_valid], axis=1)
-
-    # Build a temporary link DataFrame for vectorized grouping
-    link_df = pd.DataFrame(
-        {
-            "ch1": chs[i_valid],
-            "id1": ids[i_valid],
-            "ch2": chs[j_valid],
-            "id2": ids[j_valid],
-            "dist": dists,
-        }
+    new_points = points.copy()
+    new_points[pair_column] = pd.Series(
+        -1, index=new_points.index, dtype=pd.Int64Dtype()
     )
 
-    # Vectorized canonicalization to ensure undirected uniqueness (A-B matches B-A)
-    key1 = link_df["ch1"].astype(str) + ":" + link_df["id1"].astype(str)
-    key2 = link_df["ch2"].astype(str) + ":" + link_df["id2"].astype(str)
-    swap = key1 > key2
+    if points.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    ch1_fin = np.where(swap, link_df["ch2"], link_df["ch1"])
-    id1_fin = np.where(swap, link_df["id2"], link_df["id1"])
-    ch2_fin = np.where(swap, link_df["ch1"], link_df["ch2"])
-    id2_fin = np.where(swap, link_df["id1"], link_df["id2"])
+    pts1 = points[points["C"] == ch1]
+    pts2 = points[points["C"] == ch2]
 
-    link_df["ch1"] = ch1_fin
-    link_df["id1"] = id1_fin
-    link_df["ch2"] = ch2_fin
-    link_df["id2"] = id2_fin
+    if pts1.empty or pts2.empty:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    # Group by unique pairs to find the global minimum distance
-    grouped = link_df.groupby(["ch1", "id1", "ch2", "id2"], as_index=False)[
-        "dist"
-    ].min()
+    coord_cols = [c for c in ("X", "Y", "Z") if c in points.columns]
+    coords1 = pts1[coord_cols].to_numpy(dtype=float)
+    coords2 = pts2[coord_cols].to_numpy(dtype=float)
 
-    # Build final records using only unique pairs
-    records = [
-        {row.ch1: row.id1, row.ch2: row.id2, "distance": row.dist}
-        for row in grouped.itertuples(index=False)
-    ]
+    # Bipartite spatial query between ch1 and ch2 puncta
+    tree1 = KDTree(coords1)
+    tree2 = KDTree(coords2)
+    neighbors = tree1.query_ball_tree(tree2, r=distance)
 
-    df = pd.DataFrame.from_records(records)
+    lens = [len(nb) for nb in neighbors]
+    if sum(lens) == 0:
+        return new_points, pd.DataFrame(columns=cols_output)
 
-    # Ensure all requested channels are present as columns, plus 'distance'
-    for ch in channels:
-        if ch not in df.columns:
-            df[ch] = np.nan
+    i_idx = np.repeat(np.arange(len(pts1)), lens)
+    j_idx = np.concatenate(neighbors).astype(int)
+    dists = np.linalg.norm(coords1[i_idx] - coords2[j_idx], axis=1)
 
-    # Add a new columns synapse to the original dataframe
-    new_points = points.copy()
-    for syn_id, s in df.reset_index(drop=True).iterrows():
-        for ch in channels:
-            mask = (filtered["C"] == ch) & (filtered.index.astype(int) == int(s[ch]))
-            new_points.loc[filtered.index[mask], pair_column] = int(
-                np.asarray(syn_id).item()
-            )
+    # Remap to compact active indices
+    active_i, row_pos = np.unique(i_idx, return_inverse=True)
+    active_j, col_pos = np.unique(j_idx, return_inverse=True)
+    row_pos = row_pos.ravel()
+    col_pos = col_pos.ravel()
+
+    n_a, n_b = len(active_i), len(active_j)
+
+    # Build sparse bipartite graph WITH slack nodes so unmatched puncta never block valid pairs.
+    # Real edges have weight = (dist - distance - 1.0) < 0, ensuring maximum cardinality first,
+    # then minimum total Euclidean distance!
+    edge_weights = dists - (distance + 1.0)
+    graph = csr_array((edge_weights, (row_pos, col_pos)), shape=(n_a, n_b))
+
+    row_ind, col_ind = min_weight_full_bipartite_matching(graph)
+
+    # Recover original distances from matched edges
+    matched_dists = np.asarray(graph[row_ind, col_ind]).ravel() + (distance + 1.0)
+
+    matched_idx1 = pts1.index[active_i[row_ind]]
+    matched_idx2 = pts2.index[active_j[col_ind]]
+
+    df = (
+        pd.DataFrame(
+            {
+                ch1: matched_idx1,
+                ch2: matched_idx2,
+                "distance": matched_dists,
+            }
+        )
+        .sort_values("distance", ascending=True)
+        .reset_index(drop=True)
+    )
+    df[pair_column] = df.index.astype("Int64")
+
+    new_points.loc[df[ch1], pair_column] = df[pair_column].to_numpy()
+    new_points.loc[df[ch2], pair_column] = df[pair_column].to_numpy()
 
     return new_points, df[cols_output]
 
@@ -820,6 +930,9 @@ def compute_distances(points: pd.DataFrame) -> pd.DataFrame:
         The input dataframe with the distance to the closest point in each of the other
         channels.
     """
+    required_columns = set(["X", "Y", "Z", "C"])
+    assert required_columns.issubset(points.columns)
+
     pos = ["X", "Y", "Z"]
     channels = points["C"].unique()
 
@@ -849,72 +962,6 @@ def compute_distances(points: pd.DataFrame) -> pd.DataFrame:
     return new_points
 
 
-def quantification(
-    points: pd.DataFrame, distance: float, synapse_column: str = "synapse_id"
-) -> pd.DataFrame:
-    """Quantify presence of markers for each synapse.
-
-    Group the points by synapse.
-
-    Parameters
-    ----------
-    points: pd.DataFrame
-        Data frame with columns X, Y, Z, C, synapse
-    distance: float
-        Distance threshold
-
-    Returns
-    -------
-    pd.DataFrame
-        Dataframe with a column per unique C value and a row per unique synapse value
-        reporting the number of points in the vicinity of the synapse.
-    """
-    pos = ["X", "Y", "Z"]
-
-    # Filter synapse points (synapse >= 0)
-    synapse_mask = points[synapse_column] >= 0
-    synapse_points = points[synapse_mask]
-
-    if synapse_points.empty or points.empty:
-        return pd.DataFrame(columns=points["C"].unique())
-
-    # Mappings for unique synapses and channels
-    unique_synapses = np.sort(synapse_points[synapse_column].unique())
-    synapse_to_idx = {syn: i for i, syn in enumerate(unique_synapses)}
-
-    unique_channels = points["C"].unique()
-    channel_to_idx = {c: i for i, c in enumerate(unique_channels)}
-
-    # Extract coordinates of both point clouds
-    syn_coords = synapse_points[pos].to_numpy()
-    all_coords = points[pos].to_numpy()
-
-    # Build KD-tree from synpases labeled points
-    tree = KDTree(syn_coords)
-
-    # Query all synapses neighbors
-    neighbors = tree.query_ball_point(all_coords, r=distance)
-
-    # Initialize accumulation matrix
-    acc = np.zeros((len(unique_synapses), len(unique_channels)), dtype=np.int64)
-
-    # Create index mapping
-    channels_arr = points["C"].map(channel_to_idx).to_numpy()
-    synapse_arr = synapse_points[synapse_column].map(synapse_to_idx).to_numpy()
-
-    # Aggregate counts using numpy vectorized accumulation
-    for i, nb_indices in enumerate(neighbors):
-        if not nb_indices:
-            continue
-        m = channels_arr[i]
-        syn_idxs = synapse_arr[nb_indices]
-        np.add.at(acc[:, m], syn_idxs, 1)
-
-    return pd.DataFrame(
-        data=acc, index=unique_synapses.astype(np.uint64), columns=unique_channels
-    )
-
-
 def compute_union_of_balls_volume(
     points: pd.DataFrame, ball_radius: float, voxel_size: float
 ) -> float:
@@ -934,6 +981,9 @@ def compute_union_of_balls_volume(
     float
         Total volume occupied by the union of balls.
     """
+    required_columns = set(["X", "Y", "Z"])
+    assert required_columns.issubset(points.columns)
+
     coords = points[["Z", "Y", "X"]].to_numpy()
 
     if voxel_size is None:
@@ -1000,6 +1050,9 @@ def expected_number_of_pair(
     float
         Expected number of points at a distance less than max_distance.
     """
+    required_columns = set(["X", "Y", "Z", "C"])
+    assert required_columns.issubset(points.columns)
+
     # Bounding box volume VW
     if window_volume is None:
         window_volume = np.prod(np.ptp(points[["Z", "Y", "X"]].to_numpy(), axis=0))
@@ -1064,9 +1117,10 @@ def compute_monte_carlo_pair_pvalue(
     points: pd.DataFrame,
     channels: list[str],
     max_distance: float,
-    num_shifts: int = 100,
+    num_shifts: int = 1000,
     shift_range: np.ndarray | None = None,
     min_shift: float | None = None,
+    box_size: np.ndarray | None = None,
 ):
     """Compute empirical p-value for spatial co-localization using random shifts.
 
@@ -1081,9 +1135,12 @@ def compute_monte_carlo_pair_pvalue(
     num_shifts : int, optional
         Number of random Monte Carlo shifts (default: 100).
     shift_range : np.ndarray, optional
-        Maximum shift magnitude along [Z, Y, X] (default to to 10 x max_distance)
+        Maximum shift magnitude along [Z, Y, X] (default to 10 x max_distance).
     min_shift : float, optional
         Minimum shift distance to prevent near-zero shifts (defaults to max_distance).
+    box_size : np.ndarray, optional
+        Bounding box dimensions [Z, Y, X] for toroidal boundary conditions.
+        If None, computed from the coordinate ranges of the combined points.
 
     Returns
     -------
@@ -1101,14 +1158,24 @@ def compute_monte_carlo_pair_pvalue(
     if len(pts1) == 0 or len(pts2) == 0:
         return 1.0, 0, np.zeros(num_shifts)
 
+    all_pts = np.vstack([pts1, pts2])
+    min_bound = all_pts.min(axis=0)
+    if box_size is None:
+        box_size = (all_pts.max(axis=0) - min_bound) + 1e-5
+    else:
+        box_size = np.asarray(box_size, dtype=float)
+
+    p1 = pts1 - min_bound
+    p2 = pts2 - min_bound
+
     if shift_range is None:
         shift_range = np.array([0, 10 * max_distance, 10 * max_distance])
 
     if min_shift is None:
         min_shift = max_distance
 
-    tree1 = KDTree(pts1)
-    tree2 = KDTree(pts2)
+    tree1 = KDTree(p1, boxsize=box_size)
+    tree2 = KDTree(p2, boxsize=box_size)
     n0 = tree1.count_neighbors(tree2, max_distance)
 
     counts = np.zeros(num_shifts, dtype=int)
@@ -1121,9 +1188,10 @@ def compute_monte_carlo_pair_pvalue(
             shifts.append(s)
     shifts = np.array(shifts)
 
-    # Compute pair counts under random shifts
+    # Compute pair counts under random shifts with toroidal boundary conditions
     for k in range(num_shifts):
-        shifted_tree2 = KDTree(pts2 + shifts[k])
+        shifted_p2 = (p2 + shifts[k]) % box_size
+        shifted_tree2 = KDTree(shifted_p2, boxsize=box_size)
         counts[k] = tree1.count_neighbors(shifted_tree2, max_distance)
 
     # Standard Monte Carlo p-value formulation (including observed data in baseline)
@@ -1155,30 +1223,48 @@ def synapse_stats(points):
 
 
 def global_stats(
-    points: pd.DataFrame, distance: float, ball_radius: float = 2, voxel_size: float = 1
+    points: pd.DataFrame,
+    distance: float,
+    ball_radius: float = 5.0,
+    voxel_size: float = 1.0,
+    channels=None,
 ):
     """Compute global statistics at the image level.
+
+    Perform randomization for pairing.
+
 
     Parameters
     ----------
     points: pd.DataFrame
+    distance: float
+        Distance threshold for association between pair of puncta
+
+    TODO
+    ----
+    - move here the cluster randomization or compute the pairing randomization elsewhere.
     """
+    required_columns = set(["X", "Y", "Z", "C", "synapse_id", "pair_id"])
+    assert required_columns.issubset(points.columns)
+    print("ok 1")
     # Precompute the volume of the analysis window for efficiency
     volume_window = compute_union_of_balls_volume(
         points, ball_radius, voxel_size=voxel_size
     )
+    print("ok 2")
     return {
+        "Volume window": volume_window,
         **{
             f"Number of {c} puncta": len(points[points["C"] == c])
             for c in points["C"].unique()
         },
         **{
-            f"Number of {c} cluster": len(
-                (points[(points["C"] == c) & (points["cluster_id"] >= 0)])
-            )
+            f"Number of {c} cluster": points[
+                (points["C"] == c) & (points["cluster_id"] >= 0)
+            ]["cluster_id"].nunique()
             for c in ["PSD", "RIM"]
         },
-        "Number of synpases": points["synapse_id"].nunique(),
+        "Number of synpases": points[points["synapse_id"] >= 0]["synapse_id"].nunique(),
         "Number of GluA1 synpases": points[
             (points["C"] == "A1") & (points["synapse_id"] >= 0)
         ]["synapse_id"].nunique(),

@@ -168,6 +168,27 @@ def plot_points(
     return fig, axes_dict
 
 
+def plot_drift_correction(data, stabilized, shifts):
+    """Plot drift correction."""
+
+    plt.figure()
+    plt.subplot(311)
+    plt.plot(shifts.reset_index()["Z"], shifts["DX [um]"])
+    plt.plot(shifts.reset_index()["Z"], shifts["DY [um]"])
+    plt.legend(["X", "Y"])
+    plt.xlabel("Z [um]")
+    plt.ylabel("shift [um]")
+    n = 500
+    a = data[0, 2, :, :n, :n].max(axis=1)
+    b = stabilized[0, 2, :, :n, :n].max(axis=1)
+    plt.subplot(312)
+    a.plot(add_colorbar=False, cmap="gray")
+    plt.subplot(313)
+    b.plot(add_colorbar=False, cmap="gray")
+    plt.suptitle("Z drift correction")
+    plt.tight_layout()
+
+
 def plot_clusters(
     points: pd.DataFrame, ms: float = 40, split: bool = False, axes_dict: dict = {}
 ):

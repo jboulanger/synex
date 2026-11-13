@@ -127,18 +127,20 @@ def _detect_puncta_log(
     pd.DataFrame
         DataFrame with coordinates (Z, Y, X), channel (C), and intensity (V).
     """
+    columns = ["Z", "Y", "X", "C", "mean intenisty", "volume"]
     # Compute scale in pixels
     voxel = np.array([(data[a][1].values - data[a][0].values) for a in ["Z", "Y", "X"]])
     origin = np.array([data[a][0].values for a in ["Z", "Y", "X"]])
     sigma = scale_um / voxel
     sigma[0] *= 3
+
     # Compute a score using the laplacian of Gaussian filter
     score = np.asarray(data.data, dtype=np.float32)
-    score = np.sqrt(np.maximum(0, score))
+    score = np.sqrt(np.maximum(0, score))  # variance stabilization
     score = ndi.gaussian_filter(score, sigma)
     score = -ndi.laplace(score)
 
-    # Threshold the score assuming the score follows a laplace distribution
+    # Threshold the score assuming the score follows a Laplace distribution
     m = np.median(score)
     beta = np.median(np.abs(score - m))
     t = m + 2.302 * specificity * beta  # log(10)
@@ -166,12 +168,12 @@ def _detect_puncta_log(
     props = ski.measure.regionprops(labels, np.asarray(data.data))
 
     if len(props) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
+        return pd.DataFrame(columns=columns)
     coords = np.array(
         [[*p.centroid_weighted, p.area, p.intensity_mean] for p in props if p.area > 9]
     )
     if len(coords) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
+        return pd.DataFrame(columns=columns)
 
     # Scale spatial coordinates
     coords[:, :3] = origin + voxel * coords[:, :3]
@@ -192,8 +194,8 @@ def _detect_puncta_log(
             "Y": coords[:, 1],
             "X": coords[:, 2],
             "C": data.C.item() if "C" in data.coords else 0,
-            "V": coords[:, 3] * coords[:, 4],
-            "A": coords[:, 3],
+            "mean intensity": coords[:, 3] * coords[:, 4],
+            "volume": coords[:, 3] * np.prod(voxel),
         }
     )
 
@@ -232,5 +234,5 @@ def detect_puncta(
         )
 
     if len(points) == 0:
-        return pd.DataFrame(columns=["Z", "Y", "X", "C", "V", "A"])
+        return pd.DataFrame(columns=["Z", "Y", "X", "C", "mean intensity", "volume"])
     return pd.concat(points, ignore_index=True)
