@@ -7,16 +7,14 @@ from .clustering import (
     compute_distances,
     compute_poisson_pair_pvalue,
     create_synthetic_point_cloud,
-    global_stats,
     pair_cluster,
     pair_puncta_many_to_many,
     pair_puncta_one_to_one,
-    synapse_stats,
 )
 from .drift import correct_z_drift
 from .plot import plot_clusters, plot_data, plot_drift_correction, plot_points
 from .puncta import detect_puncta
-from .workflow import process
+from .workflow import global_stats, process, synapse_stats
 
 __all__ = [
     "correct_z_drift",

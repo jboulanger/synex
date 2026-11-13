@@ -8,6 +8,7 @@ import skimage as ski
 import xarray as xr
 from scipy import ndimage as ndi
 from scipy.optimize import curve_fit
+from scipy.stats import norm
 
 
 class Gaussian3D:
@@ -108,7 +109,7 @@ class Gaussian3D:
 def _detect_puncta_log(
     data: xr.DataArray,
     scale_um: float = 0.1,
-    specificity: float = 3,
+    specificity: float = 3.0,
     subpixel: bool = False,
 ) -> pd.DataFrame:
     """Detect puncta with Laplacian of Gaussians.
@@ -117,8 +118,10 @@ def _detect_puncta_log(
     ----------
     data: xr.DataArray
         Input array
-    scale_um: float
-    specificity: float
+    scale_um: float, optional
+        Scale for the lateral dimension (default 0.1), axial scale is 3 x scale_um.
+    specificity: float, optional
+        Specificity for the threshold selection (default 3).
     subpixel:bool
         activate subpixel localization
 

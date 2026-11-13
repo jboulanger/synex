@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy import ndimage as ndi
+import skimage as ski
 
 
 def _cpd_e_step(
@@ -196,6 +197,18 @@ def estimate_translation_lk_cpd(
             break
 
     return t
+
+
+def estimate_translation_dog_landmarks(
+    reference: np.ndarray,
+    moving: np.ndarray,
+    scale: float = 1.5,
+    max_iters: int = 20,
+    tol: float = 1e-4,
+):
+    ref_landmarks = ski.features.blob_dog(reference, 1, 3)[:, :2]
+    mov_landmarks = ski.features.blob_dog(moving, 1, 3)[:, :2]
+    return estimate_translation_lk_cpd(reference, moving, ref_landmarks, mov_landmarks)
 
 
 def estimate_translation(
