@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "SynXM: Synaptic marker analysis for expansion microscopy"
+type: software
+authors:
+  - family-names: Boulanger
+    given-names: Jerome
+    email: jeromeb@mrclmb.ac.uk
+version: 0.1.0
+license: GPL-3.0-only

@@ -1,7 +1,7 @@
 # Methods
 
 ### Analysis
-Images were processed using custom Python code (Python 3.13) with scikit-learn, SciPy, BioIO, and Xarray. The code is available on GitHub.
+Images were processed using custom Python code (Python 3.13) with scikit-image, scikit-learn, SciPy, BioIO, and Xarray. The code is available on GitHub.
 
 ### Image registration and drift correction
 Four-channel three-dimensional (3D) confocal image volumes were imported with native physical voxel coordinates using BioIO. Distances are reported based on images in post-expansion scale. To correct for axial and lateral displacement between optical planes acquired sequentially along the $Z$-axis, adjacent planes were aligned using Lucas–Kanade optical flow estimation. For each pair of successive planes, the images were smoothed with a spatial Gaussian kernel ($\sigma = 1\,\text{pixel}$). The 2D spatial gradients ($I_y, I_x$) and inter-plane intensity difference ($I_0$) were calculated from the average image across all channels. Subpixel rigid translations $(\Delta y, \Delta x)$ were estimated analytically from the structure tensor and applied uniformly to all channels using bicubic spline interpolation to produce drift-corrected 3D volumes.
@@ -17,11 +17,9 @@ $$d_{\text{synapse}} \le 1.0\,\mu\text{m}$$
 Pre- and postsynaptic cluster pairs were matched using a linear assigment algorithm and assigned a unique synapse identifier.
 
 ### Receptor–modulator pairing and synaptic profiling
-Spatial associations between PRRT1 and GluA1 puncta were identified using a linear assignment with a maximum Euclidean separation of $0.5\,\mu\text{m}$.
+Spatial associations between PRRT1 and GluA1 puncta were identified as connected components with a maximum Euclidean separation of $0.5\,\mu\text{m}$. To characterize synaptic molecular composition, puncta from all channels were assigned to a synapse when they fell within $1.0\,\mu\text{m}$ of a constituent PSD or RIM punctum in 3D.
 
-To characterize synaptic molecular composition, puncta from all channels were assigned to a synapse when they fell within $1.0\,\mu\text{m}$ of a constituent PSD or RIM punctum in 3D.
-
-Each punctum was uniquely assigned to the nearest synapse and the Euclidean distance from each punctum to its nearest postsynaptic (PSD-95) and presynaptic (RIM 1/2) punctum was recorded. Synapse-level measures included puncta counts per channel, PRRT1-GluA1 colocalization frequency, and relative spatial distributions. Global specimen-level statistics were also exported for population-level analyses.
+Each punctum was further uniquely assigned to the nearest synapse and the Euclidean distance from each punctum to its nearest postsynaptic (PSD-95) and presynaptic (RIM 1/2) punctum was recorded. Synapse-level measures included puncta counts per channel, PRRT1-GluA1 colocalization frequency, and relative spatial distributions. Global specimen-level statistics were also exported for population-level analyses.
 
 ### Spatial randomization and colocalization significance testing
 To test whether the observed number of DBSCAN clusters ($n_0$) in the RIM 1/2 and PSD-95 channels exceeded that expected under spatial randomness, we used $N=1000$ Monte Carlo simulations. For each simulation,  random points were sampled at the estimated density within the original point-cloud support, defined as the union of spheres with a radius of $5.0\,\mu\text{m}$. We then reran DBSCAN using the same parameters and recorded the number of clusters. The one-tailed empirical Monte Carlo $p$-value was calculated as

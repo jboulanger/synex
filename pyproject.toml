@@ -3,7 +3,7 @@ name = "synxm"
 version = "0.1.0"
 description = "Synaptic marker analysis for expansion microscopy"
 readme = "README.md"
-authors = [{ name = "jboulanger", email = "jerome.boulanger@laposte.net" }]
+authors = [{ name = "Jerome Boulanger", email = "jeromeb@mrclmb.ac.uk" }]
 requires-python = ">=3.13"
 dependencies = [
     "bioio>=3.6.0",
@@ -17,6 +17,7 @@ dependencies = [
     "scikit-learn>=1.9.1",
     "scipy>=1.18.1",
     "seaborn>=0.13.2",
+    "xarray>=2026.9.0",
 ]
 
 [project.scripts]

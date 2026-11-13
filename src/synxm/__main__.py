@@ -19,7 +19,11 @@ def load_parameters(path: Path | None) -> dict:
                 "PSD": {"scale_um": 0.1, "specificity": 8},
                 "RIM": {"scale_um": 0.1, "specificity": 6},
             },
-            "dbscan": {"eps": 1.0, "min_samples": 3},
+            "dbscan": {
+                "channels": ["RIM", "PSD"],
+                "eps": 1.0,
+                "min_samples": 3,
+            },
             "synapse": {"distance": 1.0, "channels": ["RIM", "PSD"]},
             "pairs": {"distance": 0.5, "channels": ["A1", "PRRT"]},
         }

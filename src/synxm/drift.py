@@ -2,16 +2,11 @@
 
 from itertools import product
 
+import dask.array as da
 import numpy as np
 import pandas as pd
 import xarray as xr
 from scipy import ndimage as ndi
-
-
-import numpy as np
-import scipy.ndimage as ndi
-
-import dask.array as da
 
 
 def _cpd_e_step(

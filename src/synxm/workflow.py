@@ -56,7 +56,7 @@ def process(data_path: Path, output_folder: Path, parameters: dict) -> None:
     s_stats = synxm.synapse_stats(points)
 
     # Save results
-    pval_clusters.to_csv(output_folder / "dbscan_pvalues.csv")
+    pval_clusters.to_csv(output_folder / f"{name}_dbscan_pvalues.csv")
     s_stats.to_csv(output_folder / f"{name}_s_stats.csv")
     points.to_csv(output_folder / f"{name}_points.csv")
     synapses.to_csv(output_folder / f"{name}_synapses.csv")
