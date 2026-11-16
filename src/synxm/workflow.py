@@ -71,12 +71,12 @@ def global_stats(
     """
     required_columns = set(["X", "Y", "Z", "C", "synapse_id", "pair_id"])
     assert required_columns.issubset(points.columns)
-    print("ok 1")
+
     # Precompute the volume of the analysis window for efficiency
     volume_window = compute_union_of_balls_volume(
         points, ball_radius, voxel_size=voxel_size
     )
-    print("ok 2")
+
     return {
         "Volume window": volume_window,
         **{

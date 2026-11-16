@@ -9,13 +9,6 @@ The current analysis configuration is intended for four channels:
 PRRT1, GluA1 (A1), PSD-95 (PSD), and RIM 1/2 (RIM). RIM is the presynaptic
 scaffold marker; the other three markers are analyzed as postsynaptic markers.
 
-> **Publication/reproducibility note:** Confirm that the code, parameter values,
-> and manuscript methods describe the same analysis before using results in a
-> publication. In particular, this workflow groups PRRT1 and GluA1 puncta as
-> many-to-many connected components, while the current methods text describes
-> one-to-one assignment. The workflow also does not export a dedicated
-> four-marker-positive synapse count.
-
 ## Requirements
 
 - Python 3.13 or newer
@@ -76,6 +69,9 @@ synapse:
 pairs:
   channels: [A1, PRRT]
   distance: 0.5
+association:
+  channels: [A1, PRRT]
+  distance: 1
 ```
 
 Distances and detection scales are in micrometres. The defaults above reflect

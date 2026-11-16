@@ -92,7 +92,12 @@ def cluster_dbscan(
     min_samples: int = 5,
     cluster_column: str = "cluster_id",
 ):
-    """Cluster points for each channel C using DBSCAN.
+    """Cluster points by channel using DBSCAN [1].
+
+    DBSCAN groups points by density using ``eps`` as the neighborhood radius
+    and ``min_samples`` as the minimum neighborhood size. Points not assigned
+    to a cluster receive the label ``-1``. Clustering is performed separately
+    for each selected channel using the ``(Z, Y, X)`` coordinates.
 
     Parameters
     ----------
@@ -111,6 +116,14 @@ def cluster_dbscan(
         points with X,Y,Z,C,cluster aligned with points
     pd.DataFrame
         cluster centroids
+
+    References
+    ----------
+    [1] Ester, M., Kriegel, H.-P., Sander, J., & Xu, X. (1996). A
+        Density-Based Algorithm for Discovering Clusters in Large Spatial
+        Databases with Noise. In *Proceedings of the Second International
+        Conference on Knowledge Discovery and Data Mining (KDD-96)*,
+        pp. 226–231.
     """
     required_columns = set(["X", "Y", "Z", "C"])
     if not required_columns.issubset(points.columns):
@@ -961,7 +974,21 @@ def compute_poisson_pair_pvalue(
     max_distance: float,
     volume_window: float | None = None,
 ) -> float:
-    """Compute the p-value to observe pairs assuming two Poisson point processes.
+    """Approximate the upper-tail p-value under independent CSR point processes.
+
+    The null model assumes that the two channels are independent, homogeneous
+    Poisson point processes in a shared 3D observation window. The expected
+    number of cross-channel pairs within ``max_distance`` is estimated from
+    their point counts, the window volume, and the volume of a sphere with
+    radius ``max_distance``. The observed pair count is compared with a Poisson
+    distribution having that mean.
+
+    This is an approximation: the calculation assumes a shared spatial
+    support and does not correct for observation-window edge effects. In
+    particular, nearby-pair counts can be dependent because one point may
+    participate in multiple pairs. The resulting p-value should therefore be
+    interpreted under these model assumptions, not as an exact test for
+    arbitrary spatial patterns [1, 2].
 
     Parameters
     ----------
@@ -977,7 +1004,17 @@ def compute_poisson_pair_pvalue(
     Returns
     -------
     float
-        pvalue to observe the points at a distance less than max_distance.
+        Approximate upper-tail probability of observing at least the measured
+        number of cross-channel pairs under the null model.
+
+    References
+    ----------
+    [1] Ripley, B. D. (1976). The second-order analysis of stationary point
+        processes. *Journal of Applied Probability*, 13(2), 255–266.
+        https://doi.org/10.2307/3212829
+    [2] Diggle, P. J. (2013). *Statistical Analysis of Spatial and
+        Spatio-Temporal Point Patterns* (3rd ed.). CRC Press.
+        https://doi.org/10.1201/b15326
     """
     mu = expected_number_of_pair(points, channels, max_distance, volume_window)
 
@@ -1011,6 +1048,20 @@ def compute_monte_carlo_pair_pvalue(
 ):
     """Compute empirical p-value for spatial co-localization using random shifts.
 
+    The test keeps each channel's point pattern fixed and translates one
+    channel relative to the other, following conditional randomization methods
+    for multitype spatial point patterns [1]. Translations use a toroidal
+    domain, so points shifted past one boundary re-enter at the opposite
+    boundary. The returned Monte Carlo p-value uses the plus-one correction
+    recommended when estimating p-values from randomly sampled permutations
+    [2].
+
+    This implementation is an adaptation of those methods: the default
+    toroidal domain is inferred from the observed coordinate bounds, and
+    translations shorter than ``min_shift`` are excluded. The validity of the
+    test therefore depends on whether the chosen domain and shift distribution
+    are appropriate for the image and null hypothesis.
+
     Parameters
     ----------
     points : pd.DataFrame
@@ -1020,7 +1071,7 @@ def compute_monte_carlo_pair_pvalue(
     max_distance : float
         Maximum distance threshold to count a valid pair.
     num_shifts : int, optional
-        Number of random Monte Carlo shifts (default: 100).
+        Number of random Monte Carlo shifts (default: 1000).
     shift_range : np.ndarray, optional
         Maximum shift magnitude along [Z, Y, X] (default to 10 x max_distance).
     min_shift : float, optional
@@ -1038,6 +1089,17 @@ def compute_monte_carlo_pair_pvalue(
         Observed pair count at zero shift.
     counts : np.ndarray
         Array of pair counts from the randomized shifts.
+
+    References
+    ----------
+    [1] Lotwick, H. W., & Silverman, B. W. (1982). Methods for analysing
+        spatial processes of several types of points. *Journal of the Royal
+        Statistical Society: Series B (Methodological)*, 44(3), 406–413.
+        https://doi.org/10.1111/j.2517-6161.1982.tb01221.x
+    [2] Phipson, B., & Smyth, G. K. (2010). Permutation P-values Should Never
+        Be Zero: Calculating Exact P-values When Permutations Are Randomly
+        Drawn. *Statistical Applications in Genetics and Molecular Biology*,
+        9(1). https://doi.org/10.2202/1544-6115.1585
     """
     pts1 = points[points["C"] == channels[0]][["Z", "Y", "X"]].to_numpy()
     pts2 = points[points["C"] == channels[1]][["Z", "Y", "X"]].to_numpy()

@@ -3,10 +3,12 @@
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
 import yaml
 
 import synxm
+from synxm.plot import make_the_bagel_plot
 
 MAX_WORKERS = 4
 
@@ -38,7 +40,7 @@ def main() -> None:
             "PRRT": {"scale_um": 0.4, "specificity": 6},
             "A1": {"scale_um": 0.3, "specificity": 8},
             "PSD": {"scale_um": 0.1, "specificity": 8},
-            "RIM": {"scale_um": 0.1, "specificity": 6},
+            "RIM": {"scale_um": 0.1, "specificity": 8},
         },
         "dbscan": {"channels": ["RIM", "PSD"], "eps": 1.5, "min_samples": 3},
         "synapse": {"distance": 1.0, "channels": ["RIM", "PSD"]},
@@ -46,7 +48,8 @@ def main() -> None:
         "association": {"distance": 1.0, "channels": ["A1", "PRRT"]},
     }
 
-    output_folder = Path("./results")
+    output_folder = DATA_ROOT / "results_2"
+
     filelist = [
         filename
         for data_path in FOLDERS
@@ -87,6 +90,17 @@ def main() -> None:
             gst[-1]["file"] = x.stem
     gst = pd.DataFrame.from_records(gst)
     gst.to_csv(output_folder / "global_stats.csv")
+
+    sst = pd.concat(
+        [
+            pd.read_csv(x, index_col=0).assign(file=x.stem)
+            for x in output_folder.glob("*_s_stats.csv")
+        ],
+        ignore_index=True,
+    )
+
+    make_the_bagel_plot(gst.sum().to_dict(), sst)
+    plt.savefig(output_folder / "bagel.pdf")
 
 
 if __name__ == "__main__":
