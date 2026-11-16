@@ -1,6 +1,6 @@
-# SynXM
+# SyneX
 
-SynXM is a Python package for detecting and characterizing synaptic-marker
+SynEX is a Python package for detecting and characterizing synaptic-marker
 puncta in three-dimensional, multichannel expansion-microscopy images. It
 provides axial-drift correction, puncta detection, spatial clustering,
 cross-channel association, summary statistics, and diagnostic plots.
@@ -18,7 +18,7 @@ scaffold marker; the other three markers are analyzed as postsynaptic markers.
 
 The workflow uses physical image coordinates for spatial measurements. Ensure
 that the input image has valid spatial calibration and that its channel order
-matches the channel names supplied to SynXM. The configured workflow processes
+matches the channel names supplied to SynEX. The configured workflow processes
 the first time point when a time dimension is present.
 
 ## Installation
@@ -27,11 +27,11 @@ Obtain the source code from the project repository, then install the project
 and its dependencies from the repository root:
 
 ```bash
+git clone https://github.com/jboulanger/synex.git
+cd synxm
 uv sync
 ```
 
-The public repository URL is not configured in this checkout. Add the released
-repository URL here before publication.
 
 ## Quick start
 
@@ -160,12 +160,9 @@ uv run pytest
 ## Citation, license, and data
 
 - **Citation:** Citation metadata is provided in
-  [`CITATION.cff`](./CITATION.cff). No publication DOI or public repository URL
-  is configured in this checkout; add these when the software is released.
+  [`CITATION.cff`](./CITATION.cff). Cite the version used in your analysis; no
+  publication DOI is available yet.
 - **License:** SynXM is distributed under the GNU General Public License,
   version 3. See [`LICENSE`](./LICENSE) for the full license text.
-- **Code availability:** Add the public repository URL and a release/tag for
-  the version used in the publication.
-- **Data availability:** No public example dataset or data-access link is
-  included here. Add a repository/DOI or a clear access procedure for the
-  image data and any derived data needed to reproduce the figures.
+- **Code availability:** [GitHub repository](https://github.com/jboulanger/synex).
+- **Data availability:** No public example dataset available yet.
